@@ -94,7 +94,11 @@ textarea.input{resize:vertical;min-height:54px;line-height:1.45}
 .vt.on{background:#fff;color:var(--wonk);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .original{padding:2px 0}
 .orig-note{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px}
-.orig-page{display:block;width:100%;height:auto;margin:0 0 14px;border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.orig-pagewrap{position:relative;margin:0 auto 14px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden;max-width:100%}
+.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;text-align:initial}
+.textLayer span,.textLayer br{color:#1c1c28;position:absolute;white-space:pre;cursor:text;transform-origin:0 0}
+.textLayer span::selection{background:rgba(100,96,255,.35)}
+.textLayer span::-moz-selection{background:rgba(100,96,255,.35)}
 .orig-docx{font-size:14px;line-height:1.5}
 .orig-docx table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
 .orig-docx td,.orig-docx th{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
@@ -925,18 +929,27 @@ function renderOriginal(){
   const box=el("div",{class:"original"});
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
-    box.append(el("div",{class:"orig-note"},"📄 Оригинал PDF — постранично, как загружено."));
+    box.append(el("div",{class:"orig-note"},"📄 Оригинал PDF — текст на своих местах, можно выделять и нажимать «＋ Правка». Точная вёрстка — в .docx."));
     (async()=>{
-      try{
-        const pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise;
-        const wpx=Math.max(360,(box.clientWidth||760)-4);
-        for(let i=1;i<=pdf.numPages;i++){
+      let pdf;
+      try{ pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise; }
+      catch(e){ console.error(e); box.append(el("p",{class:"muted"},"Не удалось открыть PDF.")); return; }
+      const wpx=Math.max(360,(box.clientWidth||760)-4);
+      const renderPage=async(wrap)=>{
+        const i=+wrap.dataset.page;
+        try{
           const page=await pdf.getPage(i),v1=page.getViewport({scale:1}),scale=Math.min(2,wpx/v1.width),vp=page.getViewport({scale});
-          const cv=el("canvas",{class:"orig-page"});cv.width=Math.ceil(vp.width);cv.height=Math.ceil(vp.height);
-          box.append(cv);
-          await page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise;
-        }
-      }catch(e){console.error(e);box.append(el("p",{class:"muted"},"Не удалось отрисовать PDF."));}
+          wrap.style.width=Math.ceil(vp.width)+"px";wrap.style.height=Math.ceil(vp.height)+"px";wrap.style.minHeight="";wrap.style.setProperty("--scale-factor",scale);
+          const tl=el("div",{class:"textLayer"});wrap.append(tl);
+          const tc=await page.getTextContent();
+          await pdfjsLib.renderTextLayer({textContentSource:tc,textContent:tc,container:tl,viewport:vp}).promise;   // positioned, selectable text (no heavy canvas)
+        }catch(e){ console.warn("orig page",i,e); wrap.append(el("div",{class:"muted",style:"padding:16px"},"Стр. "+i+" — не удалось отобразить")); }
+      };
+      // render text layers sequentially — light (no canvas), page 1 appears first, rest stream in
+      for(let i=1;i<=pdf.numPages;i++){
+        const wrap=el("div",{class:"orig-pagewrap"});wrap.dataset.page=i;wrap.style.minHeight="120px";box.append(wrap);
+        await renderPage(wrap);
+      }
     })();
     return box;
   }
@@ -1069,13 +1082,49 @@ function renderDock(){
  *  SELECTION → 2-FIELD MINI FORM
  * ============================================================ */
 function offsetInLeaf(leaf,node,off){let total=0;const w=document.createTreeWalker(leaf,NodeFilter.SHOW_TEXT);let nd;while((nd=w.nextNode())){if(nd===node)return total+off;total+=nd.nodeValue.length;}return total;}
+function labelFromPath(path){
+  const F={subject:"Предмет",section:"Раздел",teacher:"Педагог",date:"Дата",grade:"Класс",full_topic:"Тема",learning_objectives:"Цели обучения",lesson_goals:"Цели урока",values:"Ценности",teacher_activity:"Действия педагога",student_activity:"Действия учеников",assessment:"Оценивание",resources:"Ресурсы",statement:"Условие",criteria:"Критерии",differentiation:"Дифференциация",solution:"Решение"};
+  let m;
+  if(m=path.match(/data\.metadata\.(\w+)/))return"Метаданные → "+(F[m[1]]||m[1]);
+  if(m=path.match(/data\.stages\[(\d+)\]\.(\w+)/))return"Этап "+(+m[1]+1)+" → "+(F[m[2]]||m[2]);
+  if(m=path.match(/data\.tasks\[(\d+)\]\.(\w+)/))return"Задание "+(+m[1]+1)+" → "+(F[m[2]]||m[2]);
+  return"Документ";
+}
+// Map text selected in the "Оригинал" view back to a parsed field, so it can drive a correction.
+// Original text may differ from the parsed text (wraps/OCR), so: exact substring → field+span; else best word-overlap → section; else document-level. original_value is the TRUE selected text.
+function fieldForOriginalSelection(selRaw){
+  const selText=selRaw.replace(/\s+/g," ").trim(),sel=selText.toLowerCase();
+  if(sel.length<2)return null;
+  const selWords=sel.split(" ").filter(w=>w.length>3);
+  let exact=null,fuzzy=null,fuzzyScore=1;
+  walkLeaves(S.review._norm,(path,val)=>{
+    const raw=String(val==null?"":val);if(!raw.trim())return;const v=raw.toLowerCase().replace(/\s+/g," ");
+    if(v.includes(sel)){
+      if(!exact||raw.length<exact.raw.length){
+        const idx=raw.toLowerCase().indexOf(selText.toLowerCase());
+        exact=idx>=0
+          ?{path,label:labelFromPath(path),raw,span:{start:idx,end:idx+selText.length},selected:raw.slice(idx,idx+selText.length),fidelity:"field"}
+          :{path,label:labelFromPath(path),raw,span:null,selected:selText,fidelity:"section"};
+      }
+    } else if(selWords.length){
+      const overlap=selWords.filter(w=>v.includes(w)).length;
+      if(overlap>fuzzyScore){fuzzyScore=overlap;fuzzy={path,label:labelFromPath(path),raw,span:null,selected:selText,fidelity:"section"};}
+    }
+  });
+  return exact||fuzzy||{path:"data",label:"Документ",raw:selText,span:null,selected:selText,fidelity:"document"};
+}
 function captureSelection(){
   const sel=window.getSelection();if(!sel||sel.isCollapsed){hidePill();return;}
-  const range=sel.getRangeAt(0),leafEl=(range.startContainer.nodeType===1?range.startContainer:range.startContainer.parentElement)?.closest?.(".leaf");
-  if(!leafEl||!leafEl.closest(".left")){hidePill();return;}
-  const raw=leafEl.getAttribute("data-raw");let start=offsetInLeaf(leafEl,range.startContainer,range.startOffset),end=offsetInLeaf(leafEl,range.endContainer,range.endOffset);
-  if(start>end)[start,end]=[end,start];if(start===end){hidePill();return;}
-  pending={path:leafEl.getAttribute("data-path"),label:leafEl.getAttribute("data-label"),raw,span:{start,end},selected:raw.slice(start,end)};
+  const range=sel.getRangeAt(0),startEl=range.startContainer.nodeType===1?range.startContainer:range.startContainer.parentElement;
+  const leafEl=startEl?.closest?.(".leaf");
+  if(leafEl&&leafEl.closest(".left")){
+    const raw=leafEl.getAttribute("data-raw");let start=offsetInLeaf(leafEl,range.startContainer,range.startOffset),end=offsetInLeaf(leafEl,range.endContainer,range.endOffset);
+    if(start>end)[start,end]=[end,start];if(start===end){hidePill();return;}
+    pending={path:leafEl.getAttribute("data-path"),label:leafEl.getAttribute("data-label"),raw,span:{start,end},selected:raw.slice(start,end),fidelity:"field"};
+  } else if(startEl?.closest?.(".original")){
+    const m=fieldForOriginalSelection(sel.toString());if(!m){hidePill();return;}
+    pending=m;
+  } else {hidePill();return;}
   const r=range.getBoundingClientRect(),pill=$("#pill");pill.style.display="block";pill.style.left=(r.left+r.width/2)+"px";pill.style.top=(r.top-8)+"px";
 }
 function hidePill(){$("#pill").style.display="none";}
@@ -1083,7 +1132,7 @@ $("#pillBtn").addEventListener("mousedown",e=>{e.preventDefault();openFormFromPe
 function openFormFromPending(){
   if(!pending)return;hidePill();
   const guess=guessCategory(pending.path,pending.selected);
-  formDraft={id:uid("cor"),mode:"new",anchor:{json_path:pending.path,json_pointer:pathToPointer(pending.path),fidelity:"field",field_kind:fieldKindFor(pending.path),label:pending.label,span:pending.span},category:guess,severity:defaultSeverity(guess),original_value:pending.selected,corrected_value:pending.selected,edit_action:"replace",rationale:"",tags:guessTags(pending.path,pending.selected),confidence:4,source:"human",auto_rule_id:null};
+  formDraft={id:uid("cor"),mode:"new",anchor:{json_path:pending.path,json_pointer:pathToPointer(pending.path),fidelity:pending.fidelity||"field",field_kind:fieldKindFor(pending.path),label:pending.label,span:pending.span},category:guess,severity:defaultSeverity(guess),original_value:pending.selected,corrected_value:pending.selected,edit_action:"replace",rationale:"",tags:guessTags(pending.path,pending.selected),confidence:4,source:"human",auto_rule_id:null};
   if(UI.wideLeft)setWide(false);S.review._tab="fix";render();focusForm();
 }
 function guessCategory(path,txt){
