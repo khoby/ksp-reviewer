@@ -3,15 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- object-src/base-uri/form-action hardening. NOTE: GitHub Pages can't send HTTP headers,
+         so frame-ancestors/X-Frame-Options aren't settable here; the engine is inline-script
+         based so script-src is intentionally not locked. XSS is mitigated at the sink. -->
+    <meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>WONK · Консоль проверки КСП</title>
+    <meta name="description" content="WONK — проверка и оценка краткосрочных планов (КСП) по официальному «Листу наблюдения»." />
+    <meta name="theme-color" content="#6460ff" />
+    <link rel="icon" href="wonk-logo.svg" type="image/svg+xml" />
+    <meta property="og:title" content="WONK · Консоль проверки КСП" />
+    <meta property="og:description" content="Проверка и оценка краткосрочных планов (КСП)." />
+    <meta property="og:image" content="wonk-logo.svg" />
+    <meta property="og:type" content="website" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Onest:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script type="module" crossorigin src="/ksp-reviewer/assets/index-Cz3jrd1j.js"></script>
-    <link rel="stylesheet" crossorigin href="/ksp-reviewer/assets/index-NtyY_B83.css">
+    <script type="module" crossorigin src="/ksp-reviewer/assets/index-BubHNaEl.js"></script>
+    <link rel="stylesheet" crossorigin href="/ksp-reviewer/assets/index-B308uzW7.css">
   </head>
   <body>
     <div id="root"></div>

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'self'" />
 <title>WONK · Консоль правок КСП</title>
 <!--
   ksp-reviewer-demo.html — single-file demo of the КСП Correction Console (v2).
@@ -234,8 +235,8 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
 .embed .logo,.embed #tbBrand,.embed #tbReviews{display:none}
 .hidden{display:none!important}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";}else{window.__noPdfjs=true;}</script>
+<script src="vendor/pdf.min.js" onerror="window.__noPdfjs=true"></script>
+<script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc="vendor/pdf.worker.min.js";}else{window.__noPdfjs=true;}</script>
 </head>
 <body>
 <div class="topbar">
@@ -279,8 +280,11 @@ return ctor.prototype=parent.prototype,child.prototype=new ctor,child.__super__=
 if(!window.mammoth)window.__noMammoth=true;</script>
 <script>
 "use strict";
-const CONSOLE_VERSION="ksp-console-0.2.0", SCHEMA_VERSION="ksp-review/1", LS_KEY="wonk.ksp.reviews.v1";
+const CONSOLE_VERSION="ksp-console-0.2.0", SCHEMA_VERSION="ksp-review/1";
 const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+// When embedded, the React app is the system of record — use a separate scratch key so the
+// engine's own history never clobbers the app's wonk.ksp.reviews.v1.
+const LS_KEY=EMBED?"wonk.ksp.embedscratch.v1":"wonk.ksp.reviews.v1";
 
 /* ---------- correction taxonomy ---------- */
 const CATEGORIES=[
@@ -417,11 +421,34 @@ function toggleCol(id,boxEl){UI.col[id]=!boxEl.classList.contains("collapsed");b
 const $=(s,r=document)=>r.querySelector(s);
 const el=(t,a={},...kids)=>{const n=document.createElement(t);for(const k in a){if(k==="class")n.className=a[k];else if(k==="html")n.innerHTML=a[k];else if(k.startsWith("on"))n.addEventListener(k.slice(2),a[k]);else if(a[k]!=null)n.setAttribute(k,a[k]);}for(const c of kids.flat()){if(c==null)continue;n.append(c.nodeType?c:document.createTextNode(c));}return n;};
 const esc=s=>String(s??"").replace(/[&<>]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
-const uid=p=>p+"_"+Math.random().toString(36).slice(2,10);
+// Injection-proof rich render: parse untrusted HTML and rebuild a fragment with ONLY
+// <b>/<i>/<br> (no attributes) + text nodes (auto-escaped). Defeats the onerror/regex-bypass XSS.
+function safeRichFrag(html){
+  const frag=document.createDocumentFragment();
+  let doc; try{doc=new DOMParser().parseFromString(String(html||""),"text/html");}catch(e){frag.appendChild(document.createTextNode(String(html||"")));return frag;}
+  (function walk(src,dst){
+    src.childNodes.forEach(n=>{
+      if(n.nodeType===3){dst.appendChild(document.createTextNode(n.nodeValue));}
+      else if(n.nodeType===1){
+        const tag=n.tagName.toLowerCase();
+        if(tag==="b"||tag==="strong"){const e=document.createElement("b");dst.appendChild(e);walk(n,e);}
+        else if(tag==="i"||tag==="em"){const e=document.createElement("i");dst.appendChild(e);walk(n,e);}
+        else if(tag==="br"){dst.appendChild(document.createElement("br"));}
+        else walk(n,dst);   // unwrap any other tag, keep only its (escaped) text
+      }
+    });
+  })(doc.body,frag);
+  return frag;
+}
+const uid=p=>p+"_"+((typeof crypto!=="undefined"&&crypto.randomUUID)?crypto.randomUUID():Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6));
 const nowISO=()=>new Date().toISOString();
 function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),1900);}
 function loadReviews(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"[]")}catch(e){return[]}}
-function saveReviews(){localStorage.setItem(LS_KEY,JSON.stringify(S.reviews));}
+function saveReviews(){
+  try{localStorage.setItem(LS_KEY,JSON.stringify(S.reviews));return;}catch(e){/* quota — shed heavy reopen-only fields */}
+  try{localStorage.setItem(LS_KEY,JSON.stringify(S.reviews.map(r=>{const{_html,...x}=r;return x;})));return;}catch(e){}
+  try{localStorage.setItem(LS_KEY,JSON.stringify(S.reviews.map(r=>{const{_html,_norm,...x}=r;return x;})));return;}catch(e){toast("Хранилище переполнено — экспортируйте или очистите историю");}
+}
 const tLabel=(arr,k)=>(arr.find(([x])=>x===k)||[,k])[1];
 
 /* ---------- anchoring ---------- */
@@ -557,7 +584,8 @@ function openMetadataModal(first){
       <div><label class="fld">Язык контента <span class="askbadge">подтвердите</span></label>${sel("m_lang",LANGS,g.preferred_lang)}</div>
       <div><label class="fld">ID плана (для ML) — опц.</label><input class="input" id="m_lpid" value="${esc(g.lesson_plan_id||"")}" placeholder="lp_…"></div>
     </div>
-    ${S.review.ingest_warnings.length?`<p class="muted" style="margin:12px 0 0;font-size:12px">⚠ Парсер: ${S.review.ingest_warnings.join(", ")}</p>`:""}`});
+    ${S.review.ingest_warnings.includes("pdf_no_stages")?`<p style="margin:12px 0 0;padding:8px 10px;border-radius:8px;background:#fff3f0;color:#b3401f;font-size:12.5px">⚠ PDF не распознан структурно (этапы не найдены). Текст может быть неточным — лучше загрузите <b>.docx</b>.</p>`:""}
+    ${S.review.ingest_warnings.length?`<p class="muted" style="margin:8px 0 0;font-size:12px">⚠ Парсер: ${S.review.ingest_warnings.map(w=>({pdf_no_stages:"этапы не найдены",pdf_no_tasks:"задания не найдены",pdf_client:"PDF разобран в браузере",flow_table_not_found:"таблица хода урока не найдена"})[w]||w).join(", ")}</p>`:""}`});
   const modal=el("div",{class:"modal"},
     el("div",{class:"mh"},el("h2",{},"Параметры КСП"),first?null:el("button",{class:"iconbtn",onclick:closeModal},"✕")),body,
     el("div",{class:"mf"},el("div",{class:"tb-spacer"}),first?null:el("button",{class:"btn secondary",onclick:closeModal},"Отмена"),el("button",{class:"btn",onclick:submitMetadata},first?"Начать →":"Применить")));
@@ -578,7 +606,7 @@ function submitMetadata(){
 function walkLeaves(n,cb){
   ["full_topic","lesson_goals","learning_objectives","values"].forEach(f=>cb(`data.metadata.${f}`,n.metadata[f]));
   n.stages.forEach((s,i)=>["teacher_activity","student_activity","assessment","resources"].forEach(f=>cb(`data.stages[${i}].${f}`,s[f])));
-  n.tasks.forEach((t,i)=>{cb(`data.tasks[${i}].statement`,t.statement);cb(`data.tasks[${i}].solution`,t.solution);});
+  n.tasks.forEach((t,i)=>{cb(`data.tasks[${i}].statement`,t.statement);cb(`data.tasks[${i}].criteria`,t.criteria);cb(`data.tasks[${i}].differentiation`,t.differentiation);cb(`data.tasks[${i}].solution`,t.solution);});
 }
 function runLinters(n,g){
   const C=[],push=(rule,path,cat,message,suggested)=>C.push({id:uid("cand"),auto_rule_id:rule,path,category:cat,message,suggested:suggested??null});
@@ -594,7 +622,12 @@ function runLinters(n,g){
   const codes=(n.metadata.learning_objectives.match(/\d+\.\d+\.\d+\.\d+/g)||[]),hay=JSON.stringify(n.stages)+JSON.stringify(n.tasks);
   codes.filter(c=>!hay.includes(c)).forEach(c=>push("objective_coverage","data.metadata.learning_objectives","objective_misalignment",`Цель ${c} возможно не упомянута явно в этапах/заданиях.`));
   if(g.exam_track==="NIS"||g.exam_track==="BIL")
-    walkLeaves(n,(path,val)=>{const low=String(val).toLowerCase();ENT_MARKERS.forEach(mk=>{if(low.includes(mk))push("track_keyword",path,"exam_track_violation",`Маркер ЕНТ «${mk}» в плане трека ${g.exam_track} (ЕНТ-fallback запрещён).`);});});
+    walkLeaves(n,(path,val)=>{
+      const low=String(val).toLowerCase();
+      // whole-WORD match for single-word markers (JS \b fails on Cyrillic) — "ент" must NOT match "презентация"/"эксперимент"
+      const words=new Set(low.split(/[^a-zа-яёәғқңөұүһі0-9]+/i).filter(Boolean));
+      ENT_MARKERS.forEach(mk=>{const hit=mk.includes(" ")?low.includes(mk):words.has(mk);if(hit)push("track_keyword",path,"exam_track_violation",`Маркер ЕНТ «${mk}» в плане трека ${g.exam_track} (ЕНТ-fallback запрещён).`);});
+    });
   walkLeaves(n,(path,val)=>{const s=String(val);if(/(масса|скорост|ускорени|сила|энерги)\s*[×·xX*]\s*(скорост|время|масс|ускорени|путь)/i.test(s))push("formula_worded",path,"formula_verbatim_violation","Формула записана словами вместо символов — перенесите дословно.");});
   // mixed language: only meaningful words of the OTHER script, excluding [tags], «quotes», codes, urls
   // mixed language: longest contiguous run of pure foreign-script WORDS (linear scan; ignores math like 3x2y and [tags]/«values»)
@@ -621,6 +654,10 @@ function runLinters(n,g){
  *  RENDER
  * ============================================================ */
 function render(){
+  try{_render();}
+  catch(e){console.error(e);try{const app=$("#app");if(app)app.innerHTML='<div style="padding:48px 24px;text-align:center;color:#b3401f">Не удалось отобразить план.<br><button onclick="location.reload()" style="margin-top:12px;padding:8px 16px;border-radius:8px;border:0;background:#6460ff;color:#fff;cursor:pointer">Обновить</button></div>';}catch(_){}toast("Ошибка отображения");}
+}
+function _render(){
   const app=$("#app");app.innerHTML="";
   $("#revCount").textContent=S.reviews.length;
   const inReview=S.screen==="review"&&S.review;
@@ -667,21 +704,28 @@ function renderUpload(){
   return wrap;
 }
 function onDropFile(e){e.preventDefault();e.currentTarget.classList.remove("drag");const f=[...e.dataTransfer.files].find(f=>/\.(docx|pdf)$/i.test(f.name));f?routeFile(f):toast("Перетащите .docx или .pdf");}
-function routeFile(f){if(/\.pdf$/i.test(f.name))parsePdfFile(f);else parseDocxFile(f);}
+const MAX_FILE=20*1024*1024;   // 20 MB upload ceiling
+function routeFile(f){
+  if(!f)return;
+  if(f.size===0){toast("Файл пустой");return;}
+  if(f.size>MAX_FILE){toast("Файл слишком большой ("+Math.round(f.size/1048576)+" МБ) — максимум 20 МБ");return;}
+  if(/\.pdf$/i.test(f.name))parsePdfFile(f);else parseDocxFile(f);
+}
 async function parsePdfFile(file){
   toast("Распознаю PDF…");
-  const buf=await file.arrayBuffer();
+  let buf;
+  try{ buf=await file.arrayBuffer(); }catch(e){console.error(e);toast("Не удалось прочитать файл");return;}
   // 1) try the local python server (pdfplumber — best quality) if it's reachable
   try{
     const r=await fetch("/parse-pdf",{method:"POST",body:buf.slice(0),headers:{"Content-Type":"application/pdf"}});
     if(r.ok){const res=await r.json(); if(!res.error){res.norm.name=res.norm.name||file.name.replace(/\.pdf$/i,"");startReview(res);return;}}
   }catch(e){/* no server (static hosting) → client-side below */}
-  // 2) client-side pdf.js (works on static hosting)
+  // 2) client-side pdf.js (works on static hosting), with a 30s safety timeout
   try{
-    if(window.__noPdfjs||!window.pdfjsLib){toast("PDF-движок (pdf.js) не загрузился — нужен интернет");return;}
-    const res=await parsePdfClient(buf,file.name);
+    if(window.__noPdfjs||!window.pdfjsLib){toast("PDF-движок (pdf.js) не загрузился — нужен интернет, или загрузите .docx");return;}
+    const res=await Promise.race([parsePdfClient(buf,file.name),new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),30000))]);
     startReview(res);
-  }catch(e){console.error(e);toast("Не удалось разобрать PDF");}
+  }catch(e){console.error(e);toast(e&&e.message==="timeout"?"PDF слишком большой или защищён — попробуйте .docx":"Не удалось разобрать PDF — попробуйте .docx");}
 }
 const PDF_STAGE=/(нача|середин|основн|конец|қорыт|кіріспе|start|middle|end)/i;
 function pdfReflow(t){return taskReflow(t);}  // reuse: breaks on numbered steps / bullets / section markers
@@ -758,6 +802,9 @@ async function parsePdfClient(buf,fname){
     tasks.push({task_number:n,title,difficulty:diff,statement:sp.statement,criteria:sp.criteria,differentiation:sp.differentiation,solution:taskReflow(solM?solM[1]:"")});}
   if(tasks.length)base.norm.tasks=tasks;
   base.norm.name=base.norm.metadata.full_topic||base.norm.metadata.section||fname.replace(/\.pdf$/i,"");
+  // warn when the PDF gave no structure — otherwise the teacher scores an essentially empty plan
+  if(!base.norm.stages.length)base.warnings.push("pdf_no_stages");
+  if(!base.norm.tasks.length)base.warnings.push("pdf_no_tasks");
   return base;
 }
 function parseDocxFile(file){
@@ -799,7 +846,8 @@ function leaf(path,label,val){
   const node=el("span",{class:"leaf","data-path":path,"data-label":label,"data-raw":val??""});
   if(corr.some(c=>c.anchor.fidelity==="section"))node.classList.add("flagged-section");
   const rich=S.review._html&&S.review._html[path];   // bold/italic from docx (only when no corrections on this field)
-  node.innerHTML=(corr.length||!rich)?highlightField(val??"",corr):rich;
+  if(corr.length||!rich)node.innerHTML=highlightField(val??"",corr);   // esc-safe
+  else node.appendChild(safeRichFrag(rich));                           // sanitized DOM build (no innerHTML of untrusted)
   return node;
 }
 function highlightField(raw,corrs){
@@ -997,6 +1045,7 @@ function focusKeep(sel){setTimeout(()=>$(sel)?.focus(),10);}
 function renderFixOnly(){S.review._tab="fix";renderRailOnly();}
 function saveForm(){
   const f=formDraft;
+  if(f.edit_action!=="flag_only"&&(f.corrected_value??"")===f.original_value){f.edit_action="flag_only";f.corrected_value=null;}  // a replace identical to the original is just a flag
   if(!f.rationale.trim()&&f.edit_action==="flag_only"){toast("Опишите, что не так");return;}
   if(f.edit_action!=="flag_only"&&!(f.corrected_value??"").trim()){toast("Заполните «как надо» или нажмите «только флаг»");return;}
   const c={id:f.id,anchor:f.anchor,category:f.category,severity:f.severity,original_value:f.original_value,corrected_value:f.edit_action==="flag_only"?null:f.corrected_value,edit_action:f.edit_action,rationale:f.rationale.trim(),tags:f.tags,confidence:f.confidence,source:f.source,auto_rule_id:f.auto_rule_id,reviewer:REVIEWER,created_at:f._created||nowISO(),updated_at:nowISO()};
@@ -1009,7 +1058,7 @@ function removeCorrection(id){S.review.corrections=S.review.corrections.filter(c
 function confirmCandidate(c){
   const val=resolvePath(getRoot(),c.path);let original,fidelity,action,corrected;
   if(val!==null&&typeof val==="object"){fidelity="section";original="";action="flag_only";corrected=null;}
-  else{fidelity="field";original=val==null?"":String(val);if(c.suggested!=null){action="replace";corrected=c.suggested;}else if(original){action="replace";corrected=original;}else{action="flag_only";corrected=null;}}
+  else{fidelity="field";original=val==null?"":String(val);if(c.suggested!=null&&c.suggested!==original){action="replace";corrected=c.suggested;}else{action="flag_only";corrected=null;}}
   formDraft={id:uid("cor"),mode:"new",anchor:{json_path:c.path,json_pointer:pathToPointer(c.path),fidelity,field_kind:fieldKindFor(c.path),label:labelForPath(c.path),span:null},category:c.category,severity:defaultSeverity(c.category),original_value:original,corrected_value:corrected,edit_action:action,rationale:c.message,tags:guessTags(c.path,original),confidence:4,source:"auto_confirmed",auto_rule_id:c.auto_rule_id};
   S.review._candidates=S.review._candidates.filter(x=>x.id!==c.id);if(UI.wideLeft)setWide(false);S.review._tab="fix";render();focusForm();
 }
@@ -1053,6 +1102,7 @@ function checkInvariants(review){
 }
 function openExportModal(){
   const review=buildReview(),inv=checkInvariants(review);exportTab="json";
+  const allOk=inv.every(([ok])=>ok);   // contract must hold before we hand data to ML
   const view=el("div",{style:"margin-top:12px"});
   const body=el("div",{class:"mb"},el("div",{class:"tabs"},el("button",{onclick:()=>{exportTab="json";paint();}},"JSON"),el("button",{onclick:()=>{exportTab="diff";paint();}},"Diff")),view);
   const invBox=el("div",{class:"invlist"});inv.forEach(([ok,l])=>invBox.append(el("div",{class:"inv "+(ok?"ok":"bad")},el("span",{class:"mk"},ok?"✓":"!"),el("span",{},l))));
@@ -1062,7 +1112,11 @@ function openExportModal(){
   const modal=el("div",{class:"modal wide"},
     el("div",{class:"mh"},el("h2",{},"Экспорт оценки и правок"),el("span",{class:"chip "+(review.observation.total>=68?"good":review.observation.total>=41?"warn":"bad")},`${review.observation.total}/${RUBRIC_MAX}`),el("span",{class:"chip "+(review.verdict.decision==="reject"?"bad":review.verdict.decision==="accept"?"good":"warn")},tLabel([["accept","Принять"],["accept_with_edits","С правками"],["reject","Отклонить"]],review.verdict.decision)),el("button",{class:"iconbtn",onclick:closeModal},"✕")),
     body,
-    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(json);toast("JSON скопирован");}},"⧉ Копировать"),el("button",{class:"btn secondary",onclick:()=>download(`ksp-review_${review.generation.lesson_plan_id||review.review_id}.json`,json)},"⭳ Скачать"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",onclick:()=>{if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},"*");toast("Отправлено ✓");}else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");}},"📤 Отправить ML")));
+    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(json);toast("JSON скопирован");}},"⧉ Копировать"),el("button",{class:"btn secondary",onclick:()=>download(`ksp-review_${review.generation.lesson_plan_id||review.review_id}.json`,json)},"⭳ Скачать"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
+      if(!allOk){toast("Сначала исправьте контракт: "+((inv.find(([ok])=>!ok)||[,""])[1]));return;}
+      if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");}
+      else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");
+    }},"📤 Отправить ML")));
   showModal(modal);paint();
 }
 function renderExportDiff(review){
@@ -1140,7 +1194,14 @@ const SYNTH_NIS={
 
 if(EMBED)document.body.classList.add("embed");render();
 // Host (React app) can push a previously-saved review back in to reopen it.
-window.addEventListener("message",function(e){var d=e&&e.data;if(d&&d.type==="load-review"&&d.review){try{openSavedReview(d.review);}catch(err){toast("Не удалось открыть проверку");}}});
+window.addEventListener("message",function(e){
+  if(e.origin!==window.location.origin||e.source!==window.parent)return;   // only the same-origin host app may drive the engine
+  var d=e&&e.data;
+  if(d&&d.type==="load-review"&&d.review&&d.review._norm){try{openSavedReview(d.review);}catch(err){console.error(err);S.screen="upload";S.review=null;render();toast("Не удалось открыть проверку");}}
+});
+// surface otherwise-silent failures (no server to log to)
+window.addEventListener("error",function(ev){console.error("[ksp]",ev.error||ev.message);});
+window.addEventListener("unhandledrejection",function(ev){console.error("[ksp] unhandled",ev.reason);});
 </script>
 </body>
 </html>
