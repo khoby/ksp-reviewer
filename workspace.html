@@ -89,6 +89,17 @@ textarea.input{resize:vertical;min-height:54px;line-height:1.45}
 .splitter::after{content:"";position:absolute;top:0;bottom:0;left:-6px;right:-6px}
 .left{display:flex;flex-direction:column;overflow:hidden;min-height:0;border-right:1px solid var(--line)}
 .docscroll{flex:1;overflow:auto;min-height:0;padding:20px 22px 140px}
+.viewtoggle{display:inline-flex;gap:2px;background:var(--page);border:1px solid var(--line);border-radius:10px;padding:2px;margin-right:8px}
+.vt{border:0;background:transparent;font:inherit;font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer;color:var(--ink-soft)}
+.vt.on{background:#fff;color:var(--wonk);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.original{padding:2px 0}
+.orig-note{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px}
+.orig-page{display:block;width:100%;height:auto;margin:0 0 14px;border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.orig-docx{font-size:14px;line-height:1.5}
+.orig-docx table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
+.orig-docx td,.orig-docx th{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
+.orig-docx p{margin:6px 0}.orig-docx h1,.orig-docx h2,.orig-docx h3{margin:12px 0 6px;font-size:15px}
+.orig-text{white-space:pre-wrap;font-size:13px;line-height:1.5;background:var(--page);padding:12px;border-radius:8px}
 .right{background:#fff;display:flex;flex-direction:column;min-height:0}
 .left .doc{max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
 .sec{border:1px solid var(--line);border-radius:var(--r-card);background:#fff;box-shadow:var(--sh-card);overflow:hidden}
@@ -285,6 +296,8 @@ const EMBED=new URLSearchParams(location.search).get("embed")==="1";
 // When embedded, the React app is the system of record — use a separate scratch key so the
 // engine's own history never clobbers the app's wonk.ksp.reviews.v1.
 const LS_KEY=EMBED?"wonk.ksp.embedscratch.v1":"wonk.ksp.reviews.v1";
+// The raw uploaded source, kept in memory for the faithful "Оригинал" view (per session, not persisted).
+let SOURCE=null;
 
 /* ---------- correction taxonomy ---------- */
 const CATEGORIES=[
@@ -701,13 +714,13 @@ function renderUpload(){
   t1.append(el("span",{class:"rank"},"структура"),el("div",{class:"ico"},"📄"),el("h3",{},"Перетащите .docx или .pdf"),el("p",{class:"muted"},"Short-Term-Plan из системы. Парсит таблицы: этапы, задания, критерии."),
     el("label",{class:"btn secondary sm",style:"align-self:flex-start"},"Выбрать файл",el("input",{type:"file",accept:".docx,.pdf",style:"display:none",onchange:e=>e.target.files[0]&&routeFile(e.target.files[0])})));
   const ta2=el("textarea",{class:"input",placeholder:"Вставьте текст КСП…"});
-  const t2=el("div",{class:"tile"});t2.append(el("span",{class:"rank"},"текст"),el("div",{class:"ico"},"📝"),el("h3",{},"Вставить текст"),ta2,el("button",{class:"btn secondary sm",onclick:()=>ta2.value.trim()&&startReview(normalizeFromText(ta2.value))},"Загрузить"));
+  const t2=el("div",{class:"tile"});t2.append(el("span",{class:"rank"},"текст"),el("div",{class:"ico"},"📝"),el("h3",{},"Вставить текст"),ta2,el("button",{class:"btn secondary sm",onclick:()=>{if(ta2.value.trim()){SOURCE={kind:"text",text:ta2.value};startReview(normalizeFromText(ta2.value));}}},"Загрузить"));
   const ta3=el("textarea",{class:"input",placeholder:'{"data":{"metadata":…,"stages":[…]}}'});
-  const t3=el("div",{class:"tile solid"});t3.append(el("span",{class:"rank"},"JSON"),el("div",{class:"ico"},"{ }"),el("h3",{},"Вставить JSON"),el("p",{class:"muted",style:"margin:0",html:"Каноничный <span class='mono'>ILessonPlan</span>."}),ta3,el("button",{class:"btn secondary sm",onclick:()=>{try{startReview(normalizeFromJson(JSON.parse(ta3.value)))}catch(e){toast("Некорректный JSON")}}},"Загрузить"));
+  const t3=el("div",{class:"tile solid"});t3.append(el("span",{class:"rank"},"JSON"),el("div",{class:"ico"},"{ }"),el("h3",{},"Вставить JSON"),el("p",{class:"muted",style:"margin:0",html:"Каноничный <span class='mono'>ILessonPlan</span>."}),ta3,el("button",{class:"btn secondary sm",onclick:()=>{try{const o=normalizeFromJson(JSON.parse(ta3.value));SOURCE=null;startReview(o)}catch(e){toast("Некорректный JSON")}}},"Загрузить"));
   tiles.append(t1,t2,t3);wrap.append(tiles);
   const ex=el("div",{class:"example-row"});ex.append(el("span",{class:"muted",style:"font-weight:600"},"Примеры:"));
-  ex.append(el("button",{class:"btn ghost sm",onclick:()=>startReview(realFixture())},"▶ Реальный КСП: Освоение целины (История, 9 кл)"));
-  ex.append(el("button",{class:"btn ghost sm",onclick:()=>startReview({warnings:[],source_format:"docx",prov:{lesson_plan_id:"lp_demo"},norm:SYNTH_NIS})},"▶ NIS Физика (демо-дефекты)"));
+  ex.append(el("button",{class:"btn ghost sm",onclick:()=>{SOURCE=null;startReview(realFixture())}},"▶ Реальный КСП: Освоение целины (История, 9 кл)"));
+  ex.append(el("button",{class:"btn ghost sm",onclick:()=>{SOURCE=null;startReview({warnings:[],source_format:"docx",prov:{lesson_plan_id:"lp_demo"},norm:SYNTH_NIS})}},"▶ NIS Физика (демо-дефекты)"));
   if(window.__noMammoth)ex.append(el("span",{class:"chip warn"},"⚠ .docx нужен интернет (mammoth)"));
   wrap.append(ex);
   if(S.reviews.length)wrap.append(el("div",{style:"margin-top:24px"},el("button",{class:"btn ghost sm",onclick:openReviewsModal},`📦 Сохранённые ревью: ${S.reviews.length} · NDJSON`)));
@@ -725,6 +738,7 @@ async function parsePdfFile(file){
   toast("Распознаю PDF…");
   let buf;
   try{ buf=await file.arrayBuffer(); }catch(e){console.error(e);toast("Не удалось прочитать файл");return;}
+  SOURCE={kind:"pdf",bytes:new Uint8Array(buf.slice(0))};   // keep a copy for the "Оригинал" view (pdf.js may detach buf)
   // 1) try the local python server (pdfplumber — best quality) if it's reachable
   try{
     const r=await fetch("/parse-pdf",{method:"POST",body:buf.slice(0),headers:{"Content-Type":"application/pdf"}});
@@ -822,6 +836,7 @@ function parseDocxFile(file){
   if(window.__noMammoth||!window.mammoth){toast("mammoth не загружен — вставьте текст/JSON");return;}
   const r=new FileReader();
   r.onload=()=>window.mammoth.convertToHtml({arrayBuffer:r.result}).then(out=>{
+    SOURCE={kind:"docx",html:out.value};   // formatted HTML for the "Оригинал" view
     const doc=new DOMParser().parseFromString(out.value,"text/html");
     const res=kspParseDoc(doc);
     if(!res.norm.stages.length){res.warnings.push("no_stages_found");}
@@ -837,7 +852,7 @@ function renderWorkspace(){
   if(UI.leftw)ws.style.setProperty("--leftw",UI.leftw+"%");
   const left=el("div",{class:"pane left",onmouseup:captureSelection});
   left.append(buildDocNav());
-  const dscroll=el("div",{class:"docscroll"});dscroll.append(renderDoc());left.append(dscroll);
+  const dscroll=el("div",{class:"docscroll"});dscroll.append(S.review._view==="original"?renderOriginal():renderDoc());left.append(dscroll);
   const sp=el("div",{class:"splitter",title:"Потяните, чтобы изменить ширину"});
   sp.addEventListener("pointerdown",e=>startSplit(e,ws,sp));
   const right=el("div",{class:"pane right"});right.append(renderRail());
@@ -879,12 +894,57 @@ const shortStage=(nm,i)=>{const s=(nm||"").trim(),low=s.toLowerCase();
   const c=s.replace(/\s*(урок[а-яё]*|of the lesson).*$/i,"").trim();return (c||s||("Этап "+(i+1))).slice(0,16);};
 function toggleAllStages(btn){const st=[...document.querySelectorAll(".left .stage")];const anyOpen=st.some(s=>!s.classList.contains("collapsed"));st.forEach((s,i)=>{s.classList.toggle("collapsed",anyOpen);UI.col["stg-"+i]=anyOpen;});btn.textContent=anyOpen?"⊞ Развернуть этапы":"⊟ Свернуть этапы";}
 function buildDocNav(){
-  const n=S.review._norm,nav=el("div",{class:"docnav"});
-  nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#sec-meta")},"Метаданные"));
-  n.stages.forEach((s,i)=>nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#stg-"+i)},shortStage(s.stage_name,i))));
-  if(n.tasks.length)nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#sec-tasks")},"Задания"));
-  nav.append(el("span",{style:"flex:1"}),el("button",{class:"jump",onclick:e=>toggleAllStages(e.currentTarget)},"⊟ Свернуть этапы"));
+  const n=S.review._norm,nav=el("div",{class:"docnav"}),orig=S.review._view==="original";
+  // view toggle: parsed (structured) vs original (as uploaded)
+  nav.append(el("div",{class:"viewtoggle"},
+    el("button",{class:"vt"+(orig?"":" on"),onclick:()=>{S.review._view="parsed";render();}},"📋 Разобранный"),
+    el("button",{class:"vt"+(orig?" on":""),title:SOURCE?"Показать оригинал — как загружено":"Оригинал доступен только при загрузке файла в этой сессии",
+      onclick:()=>{if(SOURCE){S.review._view="original";render();}else toast("Оригинал доступен только при загрузке файла");}},"📄 Оригинал")));
+  if(!orig){
+    nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#sec-meta")},"Метаданные"));
+    n.stages.forEach((s,i)=>nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#stg-"+i)},shortStage(s.stage_name,i))));
+    if(n.tasks.length)nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#sec-tasks")},"Задания"));
+    nav.append(el("span",{style:"flex:1"}),el("button",{class:"jump",onclick:e=>toggleAllStages(e.currentTarget)},"⊟ Свернуть этапы"));
+  }
   return nav;
+}
+// faithful sanitizer for the docx "Оригинал" view — keeps structure (tables/lists/headings/bold), drops scripts/handlers/attrs
+function safeDocFrag(html){
+  const ALLOW={B:1,STRONG:1,I:1,EM:1,U:1,P:1,BR:1,UL:1,OL:1,LI:1,TABLE:1,THEAD:1,TBODY:1,TR:1,TD:1,TH:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,DIV:1,SPAN:1,A:1};
+  const MAP={STRONG:"b",EM:"i"};
+  const frag=document.createDocumentFragment();
+  let doc;try{doc=new DOMParser().parseFromString(String(html||""),"text/html");}catch(e){frag.appendChild(document.createTextNode(String(html||"")));return frag;}
+  (function walk(src,dst){src.childNodes.forEach(n=>{
+    if(n.nodeType===3)dst.appendChild(document.createTextNode(n.nodeValue));
+    else if(n.nodeType===1){const tag=n.tagName;if(ALLOW[tag]){const e=document.createElement(MAP[tag]||tag.toLowerCase());dst.appendChild(e);walk(n,e);}else walk(n,dst);}
+  });})(doc.body,frag);
+  return frag;
+}
+// the original uploaded КСП, rendered as faithfully as possible
+function renderOriginal(){
+  const box=el("div",{class:"original"});
+  if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
+  if(SOURCE.kind==="pdf"){
+    box.append(el("div",{class:"orig-note"},"📄 Оригинал PDF — постранично, как загружено."));
+    (async()=>{
+      try{
+        const pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise;
+        const wpx=Math.max(360,(box.clientWidth||760)-4);
+        for(let i=1;i<=pdf.numPages;i++){
+          const page=await pdf.getPage(i),v1=page.getViewport({scale:1}),scale=Math.min(2,wpx/v1.width),vp=page.getViewport({scale});
+          const cv=el("canvas",{class:"orig-page"});cv.width=Math.ceil(vp.width);cv.height=Math.ceil(vp.height);
+          box.append(cv);
+          await page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise;
+        }
+      }catch(e){console.error(e);box.append(el("p",{class:"muted"},"Не удалось отрисовать PDF."));}
+    })();
+    return box;
+  }
+  if(SOURCE.kind==="docx"){
+    box.append(el("div",{class:"orig-note"},"📄 Оригинал .docx — форматирование и таблицы."));
+    const d=el("div",{class:"orig-docx"});d.appendChild(safeDocFrag(SOURCE.html));box.append(d);return box;
+  }
+  box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));return box;
 }
 function renderDoc(){
   const n=S.review._norm,doc=el("div",{class:"doc"});
@@ -1138,7 +1198,7 @@ function renderExportDiff(review){
 }
 function finishReview(){const review=buildReview();review._norm=S.review._norm;/* keep plan for re-open */const idx=S.reviews.findIndex(r=>r.review_id===review.review_id);if(idx>=0)S.reviews[idx]=review;else S.reviews.unshift(review);saveReviews();clearDraft();$("#revCount").textContent=S.reviews.length;toast("Сохранено в историю");}
 const stripInternal=r=>{const o={};for(const k in r)if(!k.startsWith("_"))o[k]=r[k];return o;};
-function openSavedReview(r){closeModal();S.review=JSON.parse(JSON.stringify(r));if(!S.review._norm){toast("Нет данных плана для просмотра");return;}
+function openSavedReview(r){closeModal();SOURCE=null;S.review=JSON.parse(JSON.stringify(r));if(!S.review._norm){toast("Нет данных плана для просмотра");return;}
   const o=S.review.observation||{};
   if(!o.scores){const sc=Object.fromEntries(ALL_RUBRIC_ITEMS.map(id=>[id,null]));(o.sections||[]).forEach(s=>(s.items||[]).forEach(it=>{sc[it.id]=it.score;}));o.scores=sc;}
   o.max=RUBRIC_MAX;S.review.observation=o;
