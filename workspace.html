@@ -746,7 +746,8 @@ async function parsePdfFile(file){
   // 1) try the local python server (pdfplumber — best quality) if it's reachable
   try{
     const r=await fetch("/parse-pdf",{method:"POST",body:buf.slice(0),headers:{"Content-Type":"application/pdf"}});
-    if(r.ok){const res=await r.json(); if(!res.error){res.norm.name=res.norm.name||file.name.replace(/\.pdf$/i,"");startReview(res);return;}}
+    // use the server result only if it actually recovered structure — else fall through to the client parser
+    if(r.ok){const res=await r.json(); if(!res.error&&res.norm&&res.norm.stages&&res.norm.stages.length){res.norm.name=res.norm.name||file.name.replace(/\.pdf$/i,"");startReview(res);return;}}
   }catch(e){/* no server (static hosting) → client-side below */}
   // 2) client-side pdf.js (works on static hosting), with a 30s safety timeout
   try{
