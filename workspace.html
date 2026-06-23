@@ -239,7 +239,7 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
 </head>
 <body>
 <div class="topbar">
-  <div class="logo">WONK<span class="dot">.</span></div>
+  <div class="logo"><img src="wonk-logo.svg" alt="WONK" style="height:20px;width:auto;display:block"></div>
   <div class="tb-title" id="tbBrand">Консоль правок КСП</div>
   <div id="tbCtx" class="tb-title"></div>
   <div class="tb-spacer"></div>
@@ -369,6 +369,33 @@ const LESSON_TYPES=[["new_topic","Новая тема"],["practice","Практ�
 const EXAM_TRACKS=[["general","Общий"],["ENT","ЕНТ"],["NIS","NIS"],["BIL","BIL"]];
 const LANGS=[["ru","Рус"],["kk","Қаз"],["en","Eng"]];
 const REQUIRED={new_topic:["beginning","main","closure"],control:["tasks"],practice:["main","tasks"],reinforcement:["main"],combined:["beginning","main","closure"],generalization:["main","closure"]};
+// Lesson-type keyword dictionary (from MON «Типы уроков и ключевые слова»). Discriminative phrases per type;
+// detectLessonType() weights each by 1/df so terms shared across many types (мотивация, рефлексия) don't dominate.
+// STEMS (not full words) so inflected forms match: "закрепл" → закрепление/закрепления/закрепить.
+// Lists are curated to be discriminative; detectLessonType weights each stem by 1/df.
+const LESSON_TYPE_KW={
+  new_topic:["объясн","проблемн","эвристическ","наглядн","демонстр","первичн","впервые","изучен","новую тему","нового материал"],
+  reinforcement:["закрепл","упражнен","тренировк","образц","репродуктивн","практикум","отработ","навык","взаимопровер","алгоритм"],
+  generalization:["обобщ","систематиз","классифик","межпредметн","сводн","кластер","взаимосвяз"],
+  control:["контрольн","контрол","диктант","зачёт","зачет","критери","тест"],
+  practice:["практическ","проект","исследова","защищ","защит работ","презентац","жизненн","деловая игра","реальн ситуац"],
+  combined:["комбинирован","смешанн"],
+};
+function detectLessonType(text){
+  const t=_n(String(text||""));   // lowercased, whitespace-normalized
+  const df={};for(const k in LESSON_TYPE_KW)for(const p of LESSON_TYPE_KW[k])df[p]=(df[p]||0)+1;
+  const scores={},hits={};
+  for(const k in LESSON_TYPE_KW){let s=0;const h=[];for(const p of LESSON_TYPE_KW[k])if(t.includes(p)){s+=1/df[p];h.push(p);}scores[k]=s;hits[k]=h;}
+  // Combined = an explicit mix: a homework-check / review stage AND teaching new material in the same lesson.
+  if(/провер[а-яё]*\s+(?:[а-яё]+\s+)?домашн/i.test(t)&&scores.new_topic>0){   // checking prior homework + new material = combined
+    scores.combined=scores.new_topic+scores.reinforcement+1.5;hits.combined=hits.combined.concat("проверка д/з + новый материал");
+  }
+  for(const k in scores)scores[k]=+scores[k].toFixed(3);
+  const ranked=Object.keys(scores).sort((a,b)=>scores[b]-scores[a]);
+  const top=ranked[0],sum=Object.values(scores).reduce((a,b)=>a+b,0);
+  if(!sum||scores[top]<=0)return null;
+  return {type:top,score:scores[top],confidence:+(scores[top]/sum).toFixed(2),hits:hits[top],ranked,scores};
+}
 const ENT_MARKERS=["ент","ұбт","один из пяти","одного из пяти","5 вариантов ответа","пяти вариантов","формат ент","тест нцт","нцт","заполните бланк"];
 
 /* ---------- state ---------- */
@@ -511,6 +538,8 @@ function startReview(res){
     corrections:[],dismissed_auto_checks:[],ingest_warnings:res.warnings,reviewed_at:null,console_version:CONSOLE_VERSION,
     _norm:res.norm,_candidates:[],_tab:"score",_startedAt:Date.now(),_html:res.html||{},
   };
+  S.review._typeGuess=detectLessonType(text);            // auto-detect lesson type from MON keyword dictionary
+  if(S.review._typeGuess)S.review.generation.lesson_type_asserted=S.review._typeGuess.type;
   openMetadataModal(true);
 }
 function openMetadataModal(first){
@@ -518,12 +547,12 @@ function openMetadataModal(first){
   const sel=(id,opts,val)=>`<select class="input" id="${id}">${opts.map(([k,l])=>`<option value="${k}" ${k===val?"selected":""}>${l}</option>`).join("")}</select>`;
   const rec=v=>v?'<span class="recovered">распознано</span>':'<span class="askbadge">укажите</span>';
   const body=el("div",{class:"mb",html:`
-    <p class="muted" style="margin:0 0 14px">Источник: <b>${({canonical_json:"каноничный JSON",docx:".docx",paste:"текст"})[g.source_format]}</b>. Подтвердите три параметра — они включают нужные авто-проверки.</p>
+    <p class="muted" style="margin:0 0 14px">Источник: <b>${({canonical_json:"каноничный JSON",docx:".docx",pdf:".pdf",paste:"текст"})[g.source_format]||g.source_format}</b>. Подтвердите три параметра — они включают нужные авто-проверки.</p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div><label class="fld">Предмет ${rec(md.subject)}</label><input class="input" id="m_subject" value="${esc(md.subject)}"></div>
       <div><label class="fld">Класс ${rec(md.grade)}</label><input class="input" id="m_grade" value="${esc(md.grade)}"></div>
       <div style="grid-column:1/3"><label class="fld">Тема ${rec(md.full_topic)}</label><input class="input" id="m_topic" value="${esc(md.full_topic)}"></div>
-      <div><label class="fld">Тип урока <span class="askbadge">подтвердите</span></label>${sel("m_type",LESSON_TYPES,"new_topic")}</div>
+      <div><label class="fld">Тип урока ${S.review._typeGuess?`<span class="recovered">распознано · ${Math.round(S.review._typeGuess.confidence*100)}%</span>`:`<span class="askbadge">подтвердите</span>`}</label>${sel("m_type",LESSON_TYPES,g.lesson_type_asserted||"new_topic")}</div>
       <div><label class="fld">Экзам. трек <span class="askbadge">подтвердите</span></label>${sel("m_track",EXAM_TRACKS,"general")}</div>
       <div><label class="fld">Язык контента <span class="askbadge">подтвердите</span></label>${sel("m_lang",LANGS,g.preferred_lang)}</div>
       <div><label class="fld">ID плана (для ML) — опц.</label><input class="input" id="m_lpid" value="${esc(g.lesson_plan_id||"")}" placeholder="lp_…"></div>
