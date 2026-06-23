@@ -674,24 +674,35 @@ async function parsePdfClient(buf,fname){
   const titleM=fullText.match(/«([^»]{2,40})»/); if(titleM&&!base.norm.metadata.subject)base.norm.metadata.subject=titleM[1].trim();
   // ---- column x-positions from the FIRST occurrence of each header word (handles wrapped headers) ----
   const find1=re=>{const it=allItems.find(i=>re.test(i.s));return it?it.x:null;};
-  // match the FLOW column headers ("Действия педагога/ученика"), not the metadata "…педагога".
-  // (JS \w doesn't match Cyrillic, so use [а-яё]* between the words.)
-  const xT=find1(/действ[а-яёА-ЯЁ]*\s*педагог/i), xS=find1(/действ[а-яёА-ЯЁ]*\s*(учен|обуч)/i)||find1(/^ученик|обуча/i), xA=find1(/оценив/i), xR=find1(/ресурс/i);
-  if(xT!=null&&xA!=null){
-    const leftXs=allItems.filter(i=>i.x<xT-5).map(i=>i.x); const xStage=leftXs.length?Math.min(...leftXs):0;
-    const cols=[{x:xStage,k:"stage"},{x:xT,k:"teacher_activity"}];
-    if(xS!=null)cols.push({x:xS,k:"student_activity"}); cols.push({x:xA,k:"assessment"}); if(xR!=null)cols.push({x:xR,k:"resources"});
+  // Find the FLOW header row (RU "Действия педагога" or EN "Educator Actions") and take the
+  // column x-positions from that row — bilingual, and avoids matching body words like "students".
+  const hdr=allItems.find(i=>/educator\s*action|действ[а-яёА-ЯЁ]*\s*педагог/i.test(i.s));
+  let cols=null;
+  if(hdr){
+    const row=allItems.filter(i=>i.pg===hdr.pg&&Math.abs(i.y-hdr.y)<6);
+    cols=[];
+    row.forEach(it=>{const s=it.s.toLowerCase();
+      if(/educator|педагог/.test(s))cols.push({x:it.x,k:"teacher_activity"});
+      else if(/student|учен|обуч/.test(s))cols.push({x:it.x,k:"student_activity"});
+      else if(/assessment|оцен/.test(s))cols.push({x:it.x,k:"assessment"});
+      else if(/resource|ресурс/.test(s))cols.push({x:it.x,k:"resources"});});
+    cols=[...new Map(cols.map(o=>[o.k,o])).values()];
+    const minColX=cols.length?Math.min(...cols.map(c=>c.x)):1e9;
+    const leftXs=allItems.filter(i=>i.x<minColX-5).map(i=>i.x);
+    cols.push({x:leftXs.length?Math.min(...leftXs):0,k:"stage"});
+  }
+  if(cols&&cols.length>=3){
     cols.sort((a,b)=>a.x-b.x);
     const bounds=cols.map((c,j)=>j?(cols[j-1].x+c.x)/2:-1e9);
     const colKey=x=>{let k=cols[0].k;for(let j=0;j<cols.length;j++)if(x>=bounds[j])k=cols[j].k;return k;};
     const stages=[]; let cur=null;
     for(const line of lines){const t=line.text.toLowerCase();
-      if(/приложени|^\s*задания\b|№\s*\d+\s*·/.test(t))break;
-      if(/действия\s+педагог|этап\s*урок/i.test(t))continue;   // (repeated) header row
+      if(/приложени|^\s*задания\b|appendic|^\s*tasks\b|№\s*\d+\s*·/.test(t))break;
+      if(/действия\s+педагог|educator\s*action|этап\s*урок|lesson\s*stage/i.test(t))continue;   // (repeated) header row
       const c0=line.items.filter(it=>colKey(it.x)==="stage").map(i=>i.s).join(" ").trim();
       if(c0 && PDF_STAGE.test(c0)){                              // new stage (name may wrap; time captured below)
         let nm=c0.replace(/\d+\s*[-–—].*/,"").trim();
-        nm=/нача|кіріспе/i.test(c0)?"Начало урока":/середин|основн/i.test(c0)?"Середина урока":/конец|қорыт/i.test(c0)?"Конец урока":(nm||c0);
+        nm=/нача|кіріспе/i.test(c0)?"Начало урока":/середин|основн/i.test(c0)?"Середина урока":/конец|қорыт/i.test(c0)?"Конец урока":/start/i.test(c0)?"Start of the lesson":/middle/i.test(c0)?"Middle of the lesson":/end/i.test(c0)?"End of the lesson":(nm||c0);
         cur={stage_name:nm,time_label:"",duration_minutes:0,teacher_activity:"",student_activity:"",assessment:"",resources:""}; stages.push(cur);
       }
       if(!cur)continue;
@@ -706,12 +717,14 @@ async function parsePdfClient(buf,fname){
       base.norm.lesson_duration=valid.reduce((a,s)=>{const m=s.time_label.match(/(\d+)\D+(\d+)/);return Math.max(a,m?+m[2]:0);},0)||45;}
   }
   // ---- tasks (Cyrillic-safe boundaries; JS \b does not match Cyrillic) ----
-  const tasks=[],parts=fullText.split(/(№\s*\d+\s*·\s*[^\n]+)/);
+  const tasks=[],parts=fullText.split(/(№\s*\d+\s*(?:·|easy|medium|hard|лёгк|средн|сложн|базов)[^\n]*)/i);
   for(let i=1;i<parts.length;i+=2){const head=(parts[i]||"").replace(/\s+/g," ").trim(),body=parts[i+1]||"";
-    const num=head.match(/№\s*(\d+)/),n=num?+num[1]:tasks.length+1,title=(head.match(/·\s*(.+)$/)||[,""])[1].trim();
-    const solM=body.match(/(?:^|[\s.;:)\]])Решение(?![а-яёА-ЯЁ])([\s\S]+?)(?:№\s*\d+\s*·|Приложени|$)/i),pre=solM?body.slice(0,solM.index):body;
-    const condM=pre.match(/(?:^|[\s.;:)\]])Услови[ея](?![а-яёА-ЯЁ])([\s\S]+)/i),prompt=condM?condM[1]:pre,sp=splitTask(prompt);
-    tasks.push({task_number:n,title,difficulty:"",statement:sp.statement,criteria:sp.criteria,differentiation:sp.differentiation,solution:taskReflow(solM?solM[1]:"")});}
+    const num=head.match(/№\s*(\d+)/),n=num?+num[1]:tasks.length+1;
+    const title=(head.match(/·\s*(.+)$/)||[,""])[1].trim();
+    const diff=(head.match(/easy|medium|hard|лёгк\w*|средн\w*|сложн\w*|базов\w*/i)||[""])[0];
+    const solM=body.match(/(?:^|[\s.;:)\]])(?:Решение|Solution)(?![а-яёА-ЯЁa-z])([\s\S]+?)(?:№\s*\d+\s*(?:·|easy|medium|hard|лёгк|средн|сложн)|Приложени|Appendic|$)/i),pre=solM?body.slice(0,solM.index):body;
+    const condM=pre.match(/(?:^|[\s.;:)\]])(?:Услови[ея]|Statement|Task)(?![а-яёА-ЯЁa-z])([\s\S]+)/i),prompt=condM?condM[1]:pre,sp=splitTask(prompt);
+    tasks.push({task_number:n,title,difficulty:diff,statement:sp.statement,criteria:sp.criteria,differentiation:sp.differentiation,solution:taskReflow(solM?solM[1]:"")});}
   if(tasks.length)base.norm.tasks=tasks;
   base.norm.name=base.norm.metadata.full_topic||base.norm.metadata.section||fname.replace(/\.pdf$/i,"");
   return base;
