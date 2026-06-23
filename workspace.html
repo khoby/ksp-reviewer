@@ -387,6 +387,16 @@ const LESSON_TYPE_KW={
 };
 function detectLessonType(text){
   const t=_n(String(text||""));   // lowercased, whitespace-normalized
+  // 1) explicit "урок <тип>" declaration is decisive (generators often state it). [а-яё]* — JS \w skips Cyrillic.
+  const EXPLICIT=[
+    [/обобщени[а-яё]*\s+и\s+систематизаци|урок[а-яё]*\s+обобщени/,"generalization"],
+    [/практическог[а-яё]*\s+применени|урок[а-яё]*\s+практическог/,"practice"],
+    [/изучени[а-яё]*\s+новых\s+знаний|урок[а-яё]*\s+усвоени[а-яё]*\s+новых/,"new_topic"],
+    [/урок[а-яё]*\s+формировани[а-яё]*\s+(?:навык|умени)|урок[а-яё]*\s+закреплени/,"reinforcement"],
+    [/контрол[а-яё]*\s+и\s+коррекци|урок[а-яё]*\s+контрол(?:я|ьн)/,"control"],
+    [/комбинирован[а-яё]*\s+урок|урок[а-яё]*\s+комбинирован/,"combined"],
+  ];
+  for(const [re,k] of EXPLICIT)if(re.test(t))return{type:k,score:99,confidence:0.95,hits:["явно указан тип урока"],ranked:[k],scores:{[k]:99}};
   const df={};for(const k in LESSON_TYPE_KW)for(const p of LESSON_TYPE_KW[k])df[p]=(df[p]||0)+1;
   const scores={},hits={};
   for(const k in LESSON_TYPE_KW){let s=0;const h=[];for(const p of LESSON_TYPE_KW[k])if(t.includes(p)){s+=1/df[p];h.push(p);}scores[k]=s;hits[k]=h;}
@@ -751,14 +761,14 @@ async function parsePdfClient(buf,fname){
   const find1=re=>{const it=allItems.find(i=>re.test(i.s));return it?it.x:null;};
   // Find the FLOW header row (RU "Действия педагога" or EN "Educator Actions") and take the
   // column x-positions from that row — bilingual, and avoids matching body words like "students".
-  const hdr=allItems.find(i=>/educator\s*action|действ[а-яёА-ЯЁ]*\s*педагог/i.test(i.s));
+  const hdr=allItems.find(i=>/educator\s*action|действ[а-яёА-ЯЁ]*\s*(педагог|учител)/i.test(i.s));  // RU "Действия педагога/учителя" or EN "Educator Actions"
   let cols=null;
   if(hdr){
     const row=allItems.filter(i=>i.pg===hdr.pg&&Math.abs(i.y-hdr.y)<6);
     cols=[];
     row.forEach(it=>{const s=it.s.toLowerCase();
-      if(/educator|педагог/.test(s))cols.push({x:it.x,k:"teacher_activity"});
-      else if(/student|учен|обуч/.test(s))cols.push({x:it.x,k:"student_activity"});
+      if(/educator|педагог|учител/.test(s))cols.push({x:it.x,k:"teacher_activity"});
+      else if(/student|ученик|обуч/.test(s))cols.push({x:it.x,k:"student_activity"});
       else if(/assessment|оцен/.test(s))cols.push({x:it.x,k:"assessment"});
       else if(/resourc|ресурс/.test(s))cols.push({x:it.x,k:"resources"});});  // pdf.js may split "Resources"→"Resourc"+"es"
     cols=[...new Map(cols.map(o=>[o.k,o])).values()];
@@ -773,7 +783,7 @@ async function parsePdfClient(buf,fname){
     const stages=[]; let cur=null;
     for(const line of lines){const t=line.text.toLowerCase();
       if(/приложени|^\s*задания\b|appendic|^\s*tasks\b|№\s*\d+\s*·/.test(t))break;
-      if(/действия\s+педагог|educator\s*action|этап\s*урок|lesson\s*stage/i.test(t))continue;   // (repeated) header row
+      if(/действия\s+(педагог|учител|ученик)|educator\s*action|этап\s*\(?\s*мин|этап\s*урок|lesson\s*stage/i.test(t))continue;   // (repeated) header row
       const c0=line.items.filter(it=>colKey(it.x)==="stage").map(i=>i.s).join(" ").trim();
       if(c0 && PDF_STAGE.test(c0)){                              // new stage (name may wrap; time captured below)
         let nm=c0.replace(/\d+\s*[-–—].*/,"").trim();
@@ -783,13 +793,14 @@ async function parsePdfClient(buf,fname){
       if(!cur)continue;
       const range=c0.match(/(\d+)\s*[-–—]\s*(\d+)/);
       if(range&&!cur.time_label){cur.time_label=range[1]+"–"+range[2]+" мин";cur.duration_minutes=+range[2]-+range[1]+1;}
+      else if(!cur.time_label){const one=c0.match(/(\d+)\s*мин/i);if(one){cur.time_label=one[1]+" мин";cur.duration_minutes=+one[1];}}  // single-duration stages ("9 мин")
       const buck={teacher_activity:[],student_activity:[],assessment:[],resources:[]};
       line.items.forEach(it=>{const k=colKey(it.x);if(k!=="stage"&&buck[k])buck[k].push(it);});
       for(const f in buck)if(buck[f].length)cur[f]=(cur[f]+"\n"+joinItems(buck[f])).trim();
     }
     const valid=stages.filter(s=>s.time_label);   // a real stage has a time range; drops appendix false-positives
     if(valid.length){valid.forEach(s=>["teacher_activity","student_activity","assessment","resources"].forEach(f=>s[f]=pdfReflow(s[f])));base.norm.stages=valid;
-      base.norm.lesson_duration=valid.reduce((a,s)=>{const m=s.time_label.match(/(\d+)\D+(\d+)/);return Math.max(a,m?+m[2]:0);},0)||45;}
+      base.norm.lesson_duration=valid.reduce((a,s)=>a+(+s.duration_minutes||0),0)||45;}   // sum durations (works for ranges and single "N мин")
   }
   // ---- tasks (Cyrillic-safe boundaries; JS \b does not match Cyrillic) ----
   const tasks=[],parts=fullText.split(/(№\s*\d+\s*(?:·|easy|medium|hard|лёгк|средн|сложн|базов)[^\n]*)/i);
