@@ -658,10 +658,12 @@ const PDF_STAGE=/(нача|середин|основн|конец|қорыт|к�
 function pdfReflow(t){return taskReflow(t);}  // reuse: breaks on numbered steps / bullets / section markers
 async function parsePdfClient(buf,fname){
   const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  // join glyph-runs on one line: no space when the next run butts up against the previous (pdf.js splits words like "Изобра"+"жение").
+  const joinItems=arr=>{let o="";for(let i=0;i<arr.length;i++){const it=arr[i];if(i){const p=arr[i-1],gap=it.x-(p.x+(p.w||0));o+=(gap>1.4?" ":"");}o+=it.s;}return o.replace(/[ \t]+/g," ").trim();};
   const lines=[]; const allItems=[];
   for(let p=1;p<=pdf.numPages;p++){
     const page=await pdf.getPage(p), vp=page.getViewport({scale:1}), tc=await page.getTextContent();
-    const its=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({pg:p,x:+i.transform[4].toFixed(1),y:+(vp.height-i.transform[5]).toFixed(1),s:i.str}));
+    const its=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({pg:p,x:+i.transform[4].toFixed(1),y:+(vp.height-i.transform[5]).toFixed(1),w:+(i.width||0).toFixed(1),s:i.str}));
     its.sort((a,b)=>a.y-b.y||a.x-b.x);
     allItems.push(...its);
     let cur=null;
@@ -685,7 +687,7 @@ async function parsePdfClient(buf,fname){
       if(/educator|педагог/.test(s))cols.push({x:it.x,k:"teacher_activity"});
       else if(/student|учен|обуч/.test(s))cols.push({x:it.x,k:"student_activity"});
       else if(/assessment|оцен/.test(s))cols.push({x:it.x,k:"assessment"});
-      else if(/resource|ресурс/.test(s))cols.push({x:it.x,k:"resources"});});
+      else if(/resourc|ресурс/.test(s))cols.push({x:it.x,k:"resources"});});  // pdf.js may split "Resources"→"Resourc"+"es"
     cols=[...new Map(cols.map(o=>[o.k,o])).values()];
     const minColX=cols.length?Math.min(...cols.map(c=>c.x)):1e9;
     const leftXs=allItems.filter(i=>i.x<minColX-5).map(i=>i.x);
@@ -709,8 +711,8 @@ async function parsePdfClient(buf,fname){
       const range=c0.match(/(\d+)\s*[-–—]\s*(\d+)/);
       if(range&&!cur.time_label){cur.time_label=range[1]+"–"+range[2]+" мин";cur.duration_minutes=+range[2]-+range[1]+1;}
       const buck={teacher_activity:[],student_activity:[],assessment:[],resources:[]};
-      line.items.forEach(it=>{const k=colKey(it.x);if(k!=="stage"&&buck[k])buck[k].push(it.s);});
-      for(const f in buck)if(buck[f].length)cur[f]=(cur[f]+"\n"+buck[f].join(" ")).trim();
+      line.items.forEach(it=>{const k=colKey(it.x);if(k!=="stage"&&buck[k])buck[k].push(it);});
+      for(const f in buck)if(buck[f].length)cur[f]=(cur[f]+"\n"+joinItems(buck[f])).trim();
     }
     const valid=stages.filter(s=>s.time_label);   // a real stage has a time range; drops appendix false-positives
     if(valid.length){valid.forEach(s=>["teacher_activity","student_activity","assessment","resources"].forEach(f=>s[f]=pdfReflow(s[f])));base.norm.stages=valid;
@@ -1031,7 +1033,7 @@ function openExportModal(){
   const modal=el("div",{class:"modal wide"},
     el("div",{class:"mh"},el("h2",{},"Экспорт оценки и правок"),el("span",{class:"chip "+(review.observation.total>=68?"good":review.observation.total>=41?"warn":"bad")},`${review.observation.total}/${RUBRIC_MAX}`),el("span",{class:"chip "+(review.verdict.decision==="reject"?"bad":review.verdict.decision==="accept"?"good":"warn")},tLabel([["accept","Принять"],["accept_with_edits","С правками"],["reject","Отклонить"]],review.verdict.decision)),el("button",{class:"iconbtn",onclick:closeModal},"✕")),
     body,
-    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(json);toast("JSON скопирован");}},"⧉ Копировать"),el("button",{class:"btn secondary",onclick:()=>download(`ksp-review_${review.generation.lesson_plan_id||review.review_id}.json`,json)},"⭳ Скачать"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",onclick:()=>{if(EMBED){window.parent.postMessage({type:"ksp-review",review:JSON.parse(JSON.stringify(review))},"*");toast("Отправлено ✓");}else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");}},"📤 Отправить ML")));
+    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(json);toast("JSON скопирован");}},"⧉ Копировать"),el("button",{class:"btn secondary",onclick:()=>download(`ksp-review_${review.generation.lesson_plan_id||review.review_id}.json`,json)},"⭳ Скачать"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",onclick:()=>{if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},"*");toast("Отправлено ✓");}else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");}},"📤 Отправить ML")));
   showModal(modal);paint();
 }
 function renderExportDiff(review){
@@ -1108,6 +1110,8 @@ const SYNTH_NIS={
     {task_number:2,difficulty:"easy",statement:"Выберите один правильный ответ из пяти (формат ЕНТ): импульс измеряется в … 1) Н 2) Дж 3) кг·м/с 4) Вт 5) Па",solution:"3) кг·м/с"}]};
 
 if(EMBED)document.body.classList.add("embed");render();
+// Host (React app) can push a previously-saved review back in to reopen it.
+window.addEventListener("message",function(e){var d=e&&e.data;if(d&&d.type==="load-review"&&d.review){try{openSavedReview(d.review);}catch(err){toast("Не удалось открыть проверку");}}});
 </script>
 </body>
 </html>
