@@ -234,6 +234,8 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
 .embed .logo,.embed #tbBrand,.embed #tbReviews{display:none}
 .hidden{display:none!important}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";}else{window.__noPdfjs=true;}</script>
 </head>
 <body>
 <div class="topbar">
@@ -415,6 +417,23 @@ function cellText(node){
   c.querySelectorAll("p,li,div,tr").forEach(p=>p.append(document.createTextNode("\n")));
   return c.textContent.split("\n").map(s=>s.replace(/ /g," ").trim()).filter(Boolean).join("\n").trim();
 }
+// like cellText but keeps bold/italic from the docx. Returns {text, html} line-aligned so
+// the rendered HTML's textContent === text (keeps selection offsets / anchoring correct).
+function cellRich(node){
+  if(!node)return{text:"",html:""};
+  const c=node.cloneNode(true);
+  c.querySelectorAll("li").forEach(li=>li.insertBefore(document.createTextNode("• "),li.firstChild));
+  c.querySelectorAll("br").forEach(br=>br.replaceWith(document.createTextNode("\n")));
+  c.querySelectorAll("p,li,div,tr").forEach(p=>p.append(document.createTextNode("\n")));
+  let html=c.innerHTML
+    .replace(/<strong[^>]*>/gi,"<b>").replace(/<\/strong>/gi,"</b>")
+    .replace(/<em[^>]*>/gi,"<i>").replace(/<\/em>/gi,"</i>")
+    .replace(/<b[^>]*>/gi,"<b>").replace(/<i[^>]*>/gi,"<i>")
+    .replace(/<(?!\/?[bi]>)[^>]*>/gi,"");                 // keep only <b>/<i>
+  const oH=[],oT=[],tmp=document.createElement("div");
+  for(let ln of html.split("\n")){ ln=ln.replace(/ /g," ").replace(/[ \t]+/g," ").trim(); if(!ln)continue; oH.push(ln); tmp.innerHTML=ln; oT.push(tmp.textContent); }
+  return {text:oT.join("\n").trim(), html:oH.join("\n").trim()};
+}
 const _n=s=>(s||"").replace(/\s+/g," ").trim().toLowerCase();
 // task text → clean lines (break before section markers / numbered steps / bullets)
 function taskReflow(t){
@@ -433,18 +452,18 @@ function splitTask(full){
 }
 function kspParseDoc(doc){
   const warnings=[], tables=[...doc.querySelectorAll("table")], rowsOf=t=>[...t.querySelectorAll("tr")].map(tr=>[...tr.querySelectorAll("td,th")]);
-  let flow=null,appendix=null;
+  let flow=null,appendix=null;const htmlMap={};
   for(const t of tables){const h=_n(t.textContent).slice(0,400);if(/educator actions|student actions|действия педагог|действия учеников|деятельность педагог|деятельность обучающ/.test(h)&&!flow)flow=t;else if(/statement|solution|условие|решение|формулировк|сложность|difficulty/.test(h)&&!appendix)appendix=t;}
   const header=tables.find(t=>t!==flow&&t!==appendix)||tables[0];
   const LAB={subject:/^subject|предмет/,section:/^section|раздел/,teacher:/teacher|фио педагог|педагог/,date:/^date|дата/,grade:/^class|класс/,full_topic:/lesson topic|тема урок|тема занят/,learning_objectives:/learning objectives|цели обучения|обучающие цели/,lesson_goals:/lesson goals|цели урок|задачи урок/,values:/instilling values|привит|ценност/};
   const md={subject:"",section:"",teacher:"",date:"",grade:"",full_topic:"",learning_objectives:"",lesson_goals:"",values:""};
-  if(header)for(const cells of rowsOf(header)){if(!cells.length)continue;const label=_n(cells[0].textContent);for(const key in LAB)if(LAB[key].test(label)){let val=cells.slice(1).map(cellText).filter(Boolean).join(" • ");if(key==="grade"){const g=cells.map(c=>c.textContent).join(" ").match(/class[:\s]*([0-9]{1,2})|класс[:\s]*([0-9]{1,2})/i);val=g?(g[1]||g[2]):(val.match(/\d+/)||[""])[0];}if(val&&!md[key])md[key]=val;break;}}
+  if(header)for(const cells of rowsOf(header)){if(!cells.length)continue;const label=_n(cells[0].textContent);for(const key in LAB)if(LAB[key].test(label)){const _rich=cells.slice(1).map(cellRich);let val=_rich.map(r=>r.text).filter(Boolean).join(" • ");if(key==="grade"){const g=cells.map(c=>c.textContent).join(" ").match(/class[:\s]*([0-9]{1,2})|класс[:\s]*([0-9]{1,2})/i);val=g?(g[1]||g[2]):(val.match(/\d+/)||[""])[0];}if(val&&!md[key]){md[key]=val;const _h=_rich.map(r=>r.html).filter(Boolean).join(" • ");if(_h.includes("<"))htmlMap["data.metadata."+key]=_h;}break;}}
   const stages=[];
-  if(flow){const rows=rowsOf(flow);let si=rows.findIndex(r=>/educator|student|действия|деятельность/.test(_n(r.map(c=>c.textContent).join(" "))));for(let i=si+1;i<rows.length;i++){const c=rows[i];if(c.length<2)continue;const raw=cellText(c[0]),m=raw.match(/(\d+)\s*[-–—]\s*(\d+)/);stages.push({stage_name:raw.replace(/\d+\s*[-–—]\s*\d+\s*(min(ute)?|мин).*/i,"").replace(/[-–—]\s*$/,"").trim()||raw,time_label:m?`${m[1]}–${m[2]} мин`:"",duration_minutes:m?(+m[2]-+m[1]+1):0,teacher_activity:cellText(c[1]),student_activity:cellText(c[2]),assessment:cellText(c[3]),resources:cellText(c[4])});}}else warnings.push("flow_table_not_found");
+  if(flow){const rows=rowsOf(flow);let si=rows.findIndex(r=>/educator|student|действия|деятельность/.test(_n(r.map(c=>c.textContent).join(" "))));for(let i=si+1;i<rows.length;i++){const c=rows[i];if(c.length<2)continue;const raw=cellText(c[0]),m=raw.match(/(\d+)\s*[-–—]\s*(\d+)/);const idx=stages.length,F={teacher_activity:cellRich(c[1]),student_activity:cellRich(c[2]),assessment:cellRich(c[3]),resources:cellRich(c[4])};stages.push({stage_name:raw.replace(/\d+\s*[-–—]\s*\d+\s*(min(ute)?|мин).*/i,"").replace(/[-–—]\s*$/,"").trim()||raw,time_label:m?`${m[1]}–${m[2]} мин`:"",duration_minutes:m?(+m[2]-+m[1]+1):0,teacher_activity:F.teacher_activity.text,student_activity:F.student_activity.text,assessment:F.assessment.text,resources:F.resources.text});for(const f in F)if(F[f].html.includes("<"))htmlMap["data.stages["+idx+"]."+f]=F[f].html;}}else warnings.push("flow_table_not_found");
   const tasks=[];
   if(appendix){const rows=rowsOf(appendix);let si=rows.findIndex(r=>/statement|solution|условие|решение|сложность|формулировк|difficulty/.test(_n(r.map(c=>c.textContent).join(" "))));let n=0;for(let i=si+1;i<rows.length;i++){const c=rows[i];if(c.length<2)continue;const d=cellText(c[0]),dm=d.match(/№?\s*(\d+)/);const parts=splitTask(cellText(c[1]));tasks.push({task_number:dm?+dm[1]:++n,difficulty:(d.match(/easy|medium|hard|лёгк|средн|сложн|базов/i)||[""])[0]||"",statement:parts.statement,criteria:parts.criteria,differentiation:parts.differentiation,solution:taskReflow(cellText(c[2]||c[1]))});}}
   const lesson_duration=stages.reduce((a,s)=>{const m=s.time_label.match(/(\d+)\D+(\d+)/);return Math.max(a,m?+m[2]:0);},0)||stages.reduce((a,s)=>a+s.duration_minutes,0)||45;
-  return {warnings,source_format:"docx",prov:{lesson_plan_id:null},norm:{name:md.full_topic||md.section||"КСП",lesson_duration,metadata:md,stages,tasks}};
+  return {warnings,source_format:"docx",prov:{lesson_plan_id:null},html:htmlMap,norm:{name:md.full_topic||md.section||"КСП",lesson_duration,metadata:md,stages,tasks}};
 }
 /* fallback: plain text → coarse model (paste). Pulls metadata from "label\nvalue" or "label: value". */
 function normalizeFromText(text){
@@ -490,7 +509,7 @@ function startReview(res){
     observation:{instrument:"list-nablyudenia/1",max:RUBRIC_MAX,total:0,scores:Object.fromEntries(ALL_RUBRIC_ITEMS.map(id=>[id,null])),recommendations:""},
     verdict:{decision:"accept_with_edits",gate_triggered:[]},
     corrections:[],dismissed_auto_checks:[],ingest_warnings:res.warnings,reviewed_at:null,console_version:CONSOLE_VERSION,
-    _norm:res.norm,_candidates:[],_tab:"score",_startedAt:Date.now(),
+    _norm:res.norm,_candidates:[],_tab:"score",_startedAt:Date.now(),_html:res.html||{},
   };
   openMetadataModal(true);
 }
@@ -622,14 +641,80 @@ function onDropFile(e){e.preventDefault();e.currentTarget.classList.remove("drag
 function routeFile(f){if(/\.pdf$/i.test(f.name))parsePdfFile(f);else parseDocxFile(f);}
 async function parsePdfFile(file){
   toast("Распознаю PDF…");
+  const buf=await file.arrayBuffer();
+  // 1) try the local python server (pdfplumber — best quality) if it's reachable
   try{
-    const buf=await file.arrayBuffer();
-    const r=await fetch("/parse-pdf",{method:"POST",body:buf,headers:{"Content-Type":"application/pdf"}});
-    const res=await r.json();
-    if(res.error){toast("PDF: "+String(res.error).slice(0,90));return;}
-    res.norm.name=res.norm.name||file.name.replace(/\.pdf$/i,"");
+    const r=await fetch("/parse-pdf",{method:"POST",body:buf.slice(0),headers:{"Content-Type":"application/pdf"}});
+    if(r.ok){const res=await r.json(); if(!res.error){res.norm.name=res.norm.name||file.name.replace(/\.pdf$/i,"");startReview(res);return;}}
+  }catch(e){/* no server (static hosting) → client-side below */}
+  // 2) client-side pdf.js (works on static hosting)
+  try{
+    if(window.__noPdfjs||!window.pdfjsLib){toast("PDF-движок (pdf.js) не загрузился — нужен интернет");return;}
+    const res=await parsePdfClient(buf,file.name);
     startReview(res);
-  }catch(e){toast("PDF-парсер недоступен. Откройте демо через локальный сервер (node .claude/serve-ksp.mjs).");}
+  }catch(e){console.error(e);toast("Не удалось разобрать PDF");}
+}
+const PDF_STAGE=/(нача|середин|основн|конец|қорыт|кіріспе|start|middle|end)/i;
+function pdfReflow(t){return taskReflow(t);}  // reuse: breaks on numbered steps / bullets / section markers
+async function parsePdfClient(buf,fname){
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const lines=[]; const allItems=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p), vp=page.getViewport({scale:1}), tc=await page.getTextContent();
+    const its=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({pg:p,x:+i.transform[4].toFixed(1),y:+(vp.height-i.transform[5]).toFixed(1),s:i.str}));
+    its.sort((a,b)=>a.y-b.y||a.x-b.x);
+    allItems.push(...its);
+    let cur=null;
+    for(const it of its){ if(!cur||Math.abs(it.y-cur.y)>4.5){cur={pg:p,y:it.y,items:[it]};lines.push(cur);} else cur.items.push(it); }
+  }
+  lines.forEach(l=>{l.items.sort((a,b)=>a.x-b.x);l.text=l.items.map(i=>i.s).join(" ").replace(/\s+/g," ").trim();});
+  const fullText=lines.map(l=>l.text).join("\n");
+  const base=normalizeFromText(fullText);                 // metadata + coarse fallback
+  base.source_format="pdf"; base.warnings=["pdf_client"];
+  const titleM=fullText.match(/«([^»]{2,40})»/); if(titleM&&!base.norm.metadata.subject)base.norm.metadata.subject=titleM[1].trim();
+  // ---- column x-positions from the FIRST occurrence of each header word (handles wrapped headers) ----
+  const find1=re=>{const it=allItems.find(i=>re.test(i.s));return it?it.x:null;};
+  // match the FLOW column headers ("Действия педагога/ученика"), not the metadata "…педагога".
+  // (JS \w doesn't match Cyrillic, so use [а-яё]* between the words.)
+  const xT=find1(/действ[а-яёА-ЯЁ]*\s*педагог/i), xS=find1(/действ[а-яёА-ЯЁ]*\s*(учен|обуч)/i)||find1(/^ученик|обуча/i), xA=find1(/оценив/i), xR=find1(/ресурс/i);
+  if(xT!=null&&xA!=null){
+    const leftXs=allItems.filter(i=>i.x<xT-5).map(i=>i.x); const xStage=leftXs.length?Math.min(...leftXs):0;
+    const cols=[{x:xStage,k:"stage"},{x:xT,k:"teacher_activity"}];
+    if(xS!=null)cols.push({x:xS,k:"student_activity"}); cols.push({x:xA,k:"assessment"}); if(xR!=null)cols.push({x:xR,k:"resources"});
+    cols.sort((a,b)=>a.x-b.x);
+    const bounds=cols.map((c,j)=>j?(cols[j-1].x+c.x)/2:-1e9);
+    const colKey=x=>{let k=cols[0].k;for(let j=0;j<cols.length;j++)if(x>=bounds[j])k=cols[j].k;return k;};
+    const stages=[]; let cur=null;
+    for(const line of lines){const t=line.text.toLowerCase();
+      if(/приложени|^\s*задания\b|№\s*\d+\s*·/.test(t))break;
+      if(/действия\s+педагог|этап\s*урок/i.test(t))continue;   // (repeated) header row
+      const c0=line.items.filter(it=>colKey(it.x)==="stage").map(i=>i.s).join(" ").trim();
+      if(c0 && PDF_STAGE.test(c0)){                              // new stage (name may wrap; time captured below)
+        let nm=c0.replace(/\d+\s*[-–—].*/,"").trim();
+        nm=/нача|кіріспе/i.test(c0)?"Начало урока":/середин|основн/i.test(c0)?"Середина урока":/конец|қорыт/i.test(c0)?"Конец урока":(nm||c0);
+        cur={stage_name:nm,time_label:"",duration_minutes:0,teacher_activity:"",student_activity:"",assessment:"",resources:""}; stages.push(cur);
+      }
+      if(!cur)continue;
+      const range=c0.match(/(\d+)\s*[-–—]\s*(\d+)/);
+      if(range&&!cur.time_label){cur.time_label=range[1]+"–"+range[2]+" мин";cur.duration_minutes=+range[2]-+range[1]+1;}
+      const buck={teacher_activity:[],student_activity:[],assessment:[],resources:[]};
+      line.items.forEach(it=>{const k=colKey(it.x);if(k!=="stage"&&buck[k])buck[k].push(it.s);});
+      for(const f in buck)if(buck[f].length)cur[f]=(cur[f]+"\n"+buck[f].join(" ")).trim();
+    }
+    const valid=stages.filter(s=>s.time_label);   // a real stage has a time range; drops appendix false-positives
+    if(valid.length){valid.forEach(s=>["teacher_activity","student_activity","assessment","resources"].forEach(f=>s[f]=pdfReflow(s[f])));base.norm.stages=valid;
+      base.norm.lesson_duration=valid.reduce((a,s)=>{const m=s.time_label.match(/(\d+)\D+(\d+)/);return Math.max(a,m?+m[2]:0);},0)||45;}
+  }
+  // ---- tasks (Cyrillic-safe boundaries; JS \b does not match Cyrillic) ----
+  const tasks=[],parts=fullText.split(/(№\s*\d+\s*·\s*[^\n]+)/);
+  for(let i=1;i<parts.length;i+=2){const head=(parts[i]||"").replace(/\s+/g," ").trim(),body=parts[i+1]||"";
+    const num=head.match(/№\s*(\d+)/),n=num?+num[1]:tasks.length+1,title=(head.match(/·\s*(.+)$/)||[,""])[1].trim();
+    const solM=body.match(/(?:^|[\s.;:)\]])Решение(?![а-яёА-ЯЁ])([\s\S]+?)(?:№\s*\d+\s*·|Приложени|$)/i),pre=solM?body.slice(0,solM.index):body;
+    const condM=pre.match(/(?:^|[\s.;:)\]])Услови[ея](?![а-яёА-ЯЁ])([\s\S]+)/i),prompt=condM?condM[1]:pre,sp=splitTask(prompt);
+    tasks.push({task_number:n,title,difficulty:"",statement:sp.statement,criteria:sp.criteria,differentiation:sp.differentiation,solution:taskReflow(solM?solM[1]:"")});}
+  if(tasks.length)base.norm.tasks=tasks;
+  base.norm.name=base.norm.metadata.full_topic||base.norm.metadata.section||fname.replace(/\.pdf$/i,"");
+  return base;
 }
 function parseDocxFile(file){
   if(window.__noMammoth||!window.mammoth){toast("mammoth не загружен — вставьте текст/JSON");return;}
@@ -669,7 +754,9 @@ function leaf(path,label,val){
   const corr=S.review.corrections.filter(c=>c.anchor.json_path===path);
   const node=el("span",{class:"leaf","data-path":path,"data-label":label,"data-raw":val??""});
   if(corr.some(c=>c.anchor.fidelity==="section"))node.classList.add("flagged-section");
-  node.innerHTML=highlightField(val??"",corr);return node;
+  const rich=S.review._html&&S.review._html[path];   // bold/italic from docx (only when no corrections on this field)
+  node.innerHTML=(corr.length||!rich)?highlightField(val??"",corr):rich;
+  return node;
 }
 function highlightField(raw,corrs){
   const spans=corrs.filter(c=>c.anchor.span).map(c=>({...c.anchor.span,id:c.id,sev:c.severity})).sort((a,b)=>a.start-b.start);
