@@ -307,6 +307,7 @@ if(!window.mammoth)window.__noMammoth=true;</script>
 "use strict";
 const CONSOLE_VERSION="ksp-console-0.2.0", SCHEMA_VERSION="ksp-review/1";
 const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+const READONLY=new URLSearchParams(location.search).get("readonly")==="1";   // ML opens a review to read it — no editing
 // When embedded, the React app is the system of record — use a separate scratch key so the
 // engine's own history never clobbers the app's wonk.ksp.reviews.v1.
 const LS_KEY=EMBED?"wonk.ksp.embedscratch.v1":"wonk.ksp.reviews.v1";
@@ -543,7 +544,7 @@ function kspParseDoc(doc){
   let flow=null,appendix=null;const htmlMap={};
   for(const t of tables){const h=_n(t.textContent).slice(0,400);if(/educator actions|student actions|действия педагог|действия учеников|деятельность педагог|деятельность обучающ/.test(h)&&!flow)flow=t;else if(/statement|solution|условие|решение|формулировк|сложность|difficulty/.test(h)&&!appendix)appendix=t;}
   const header=tables.find(t=>t!==flow&&t!==appendix)||tables[0];
-  const LAB={subject:/^subject|предмет/,section:/^section|раздел/,teacher:/teacher|фио педагог|педагог/,date:/^date|дата/,grade:/^class|класс/,full_topic:/lesson topic|тема урок|тема занят/,learning_objectives:/learning objectives|цели обучения|обучающие цели/,lesson_goals:/lesson goals|цели урок|задачи урок/,values:/instilling values|привит|ценност/};
+  const LAB={subject:/^subject|предмет/,section:/^section|раздел/,teacher:/teacher|фио педагог|педагог/,date:/^date|дата/,grade:/^class|класс/,full_topic:/lesson topic|тема урок|тема занят/,learning_objectives:/learning objectives|цели обучения|обучающие цели/,lesson_goals:/lesson goals|цел[ьи]\s*урок|задачи урок/,values:/instilling values|привит|ценност/};
   const md={subject:"",section:"",teacher:"",date:"",grade:"",full_topic:"",learning_objectives:"",lesson_goals:"",values:""};
   if(header)for(const cells of rowsOf(header)){if(!cells.length)continue;const label=_n(cells[0].textContent);for(const key in LAB)if(LAB[key].test(label)){const _rich=cells.slice(1).map(cellRich);let val=_rich.map(r=>r.text).filter(Boolean).join(" • ");if(key==="grade"){const g=cells.map(c=>c.textContent).join(" ").match(/class[:\s]*([0-9]{1,2})|класс[:\s]*([0-9]{1,2})/i);val=g?(g[1]||g[2]):(val.match(/\d+/)||[""])[0];}if(val&&!md[key]){md[key]=val;const _h=_rich.map(r=>r.html).filter(Boolean).join(" • ");if(_h.includes("<"))htmlMap["data.metadata."+key]=_h;}break;}}
   const stages=[];
@@ -556,14 +557,33 @@ function kspParseDoc(doc){
 /* fallback: plain text → coarse model (paste). Pulls metadata from "label\nvalue" or "label: value". */
 function normalizeFromText(text){
   const lines=text.split(/\r?\n/).map(s=>s.trim());
-  const findVal=labels=>{for(let i=0;i<lines.length;i++){const low=lines[i].toLowerCase();for(const lab of labels){if(low.startsWith(lab)){const inline=lines[i].slice(lab.length).replace(/^[:：\s].*?[:：\s]?/,m=>/[:：]/.test(m)?"":m).replace(/^[:：\s]+/,"").trim();if(inline)return inline;for(let j=i+1;j<lines.length;j++)if(lines[j])return lines[j];}}}return"";};
+  // every metadata label — used to know where one field's (possibly multi-line, bulleted) value ends
+  const ALL_LABELS=["предмет","subject","раздел","section","фамилия","фио","teacher","дата","date","класс","class",
+    "тема урока","тема занят","lesson topic","тема","цели обучения","learning objectives","обучающие цели",
+    "цель урока","цели урока","задачи урока","lesson goals","привитие ценностей","instilling values","ценност",
+    "ход урока","этап","lesson flow","действия"];
+  const isLabel=s=>{const low=s.toLowerCase().trim();return ALL_LABELS.some(l=>low.startsWith(l));};
+  const findVal=labels=>{
+    for(let i=0;i<lines.length;i++){
+      const low=lines[i].toLowerCase();
+      for(const lab of labels){
+        if(low.startsWith(lab)){
+          const parts=[],inline=lines[i].slice(lab.length).replace(/^[:：\s)]+/,"").trim();
+          if(inline)parts.push(inline);
+          for(let j=i+1;j<lines.length&&parts.length<12;j++){if(!lines[j])continue;if(isLabel(lines[j]))break;parts.push(lines[j]);}  // gather wrapped/bulleted lines until the next label
+          if(parts.length)return parts.join(" ").replace(/\s+/g," ").trim();
+        }
+      }
+    }
+    return"";
+  };
   const md={
     subject:findVal(["предмет","subject"]),section:findVal(["раздел","section"]),
     teacher:findVal(["фамилия","фио","teacher"]),date:findVal(["дата","date"]),
     grade:(findVal(["класс","class"]).match(/\d+/)||[""])[0],
     full_topic:findVal(["тема урока","lesson topic","тема"]),
-    learning_objectives:findVal(["цели обучения","learning objectives"]),
-    lesson_goals:findVal(["цели урока","lesson goals"]),
+    learning_objectives:findVal(["цели обучения","обучающие цели","learning objectives"]),
+    lesson_goals:findVal(["цель урока","цели урока","задачи урока","lesson goals"]),
     values:findVal(["привитие ценностей","instilling values","ценност"]),
   };
   // best-effort stage split on Начало/Середина/Конец markers (columns can't be separated from flat text)
@@ -687,10 +707,10 @@ function _render(){
   const app=$("#app");app.innerHTML="";
   $("#revCount").textContent=S.reviews.length;
   const inReview=S.screen==="review"&&S.review;
-  $("#tbParams").classList.toggle("hidden",!inReview);
-  $("#tbShot").classList.toggle("hidden",!inReview||!SOURCE||SOURCE.kind!=="pdf");
+  $("#tbParams").classList.toggle("hidden",!inReview||READONLY);
+  $("#tbShot").classList.toggle("hidden",!inReview||READONLY||!SOURCE||SOURCE.kind!=="pdf");
   $("#tbFold").classList.toggle("hidden",!inReview);
-  $("#tbFinish").classList.toggle("hidden",!inReview);
+  $("#tbFinish").classList.toggle("hidden",!inReview||READONLY);
   $("#tbScore").classList.toggle("hidden",!inReview);
   if(inReview){
     $("#tbCtx").textContent=`${S.review._norm.metadata.subject||"—"} · ${S.review._norm.metadata.grade||"—"} кл · ${tLabel(LESSON_TYPES,S.review.generation.lesson_type_asserted)}`;
@@ -1013,7 +1033,7 @@ function openShotForm(dataUrl){
 }
 function saveShotCorrection(dataUrl,comment){
   S.review.corrections.push({id:uid("cor"),anchor:{json_path:"data",json_pointer:pathToPointer("data"),fidelity:"document",field_kind:"document",label:"Оформление (скриншот)",span:null},category:"formatting",severity:"minor",original_value:"",corrected_value:null,edit_action:"flag_only",rationale:(comment||"").trim()||"косметическая правка (скриншот)",tags:["cosmetic","screenshot"],confidence:4,source:"human",auto_rule_id:null,evidence_image:dataUrl,reviewer:REVIEWER,created_at:nowISO(),updated_at:nowISO()});
-  S.review._tab="fix";render();toast("Скриншот-правка добавлена");
+  S.review._tab="fix";renderRailOnly();toast("Скриншот-правка добавлена");
 }
 function renderDoc(){
   const n=S.review._norm,doc=el("div",{class:"doc"});
@@ -1104,12 +1124,12 @@ function renderFixTab(){
     el("span",{style:"opacity:.4;margin:0 5px"},"·"),
     el("span",{class:"kbd"},"S"),el("span",{}," скриншот"));
   const scroll=el("div",{class:"rail-scroll"});
-  if(formDraft)scroll.append(renderForm());
-  const cands=S.review._candidates;
+  if(!READONLY&&formDraft)scroll.append(renderForm());
+  const cands=READONLY?[]:S.review._candidates;
   if(cands.length){const tray=el("details",{class:"tray",open:true});tray.append(el("summary",{},`🤖 Авто-проверки · ${cands.length}`));cands.forEach(c=>tray.append(renderCandidate(c)));scroll.append(tray);}
   S.review.corrections.forEach(c=>scroll.append(renderCorrectionCard(c)));
-  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px;margin-top:4px"},"Здесь появятся ваши правки. Либо подтвердите авто-проверки ниже."));
-  wrap.append(hint,scroll,renderDock());return wrap;
+  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px;margin-top:4px"},READONLY?"Учитель не оставил правок.":"Здесь появятся ваши правки. Либо подтвердите авто-проверки ниже."));
+  wrap.append(READONLY?el("div",{class:"fixhint"},"👁 Только просмотр — правки и оценка учителя"):hint,scroll,renderDock());return wrap;
 }
 function renderCandidate(c){
   const box=el("div",{class:"cand","data-path":c.path});
@@ -1125,7 +1145,7 @@ function renderCorrectionCard(c){
   if(c.evidence_image)box.append(el("img",{src:c.evidence_image,style:"max-width:100%;display:block;margin:6px 0;border:1px solid var(--line);border-radius:6px"}));
   else box.append(c.edit_action==="flag_only"?el("div",{class:"diff muted"},"⚑ только флаг"):el("div",{class:"diff",html:wordDiff(c.original_value,c.corrected_value??"")}));
   if(c.rationale)box.append(el("div",{class:"muted",style:"font-size:12.5px"},"💬 "+c.rationale));
-  box.append(el("div",{class:"ccfoot"},(c.tags||[]).map(t=>el("span",{class:"chip tag"},"#"+t)),el("span",{style:"flex:1"}),el("button",{class:"iconbtn",onclick:()=>editCorrection(c.id)},"✎"),el("button",{class:"iconbtn",onclick:()=>removeCorrection(c.id)},"🗑")));
+  box.append(el("div",{class:"ccfoot"},(c.tags||[]).map(t=>el("span",{class:"chip tag"},"#"+t)),el("span",{style:"flex:1"}),READONLY?null:el("button",{class:"iconbtn",onclick:()=>editCorrection(c.id)},"✎"),READONLY?null:el("button",{class:"iconbtn",onclick:()=>removeCorrection(c.id)},"🗑")));
   box.addEventListener("mouseenter",()=>{box.classList.add("is-active");markActive(c.id,true);});box.addEventListener("mouseleave",()=>{box.classList.remove("is-active");markActive(c.id,false);});
   box.addEventListener("click",()=>{const m=$(`mark[data-cid="${c.id}"]`);m&&m.scrollIntoView({block:"center",behavior:"smooth"});});
   return box;
@@ -1134,7 +1154,7 @@ const sevChip=s=>({critical:"bad",major:"warn",minor:"soft"}[s]);
 function renderDock(){
   const v=S.review.verdict,crit=S.review.corrections.filter(c=>c.severity==="critical"),dock=el("div",{class:"dock"});
   if(crit.length){if(v.decision==="accept")v.decision="reject";dock.append(el("div",{class:"gatewarn"},`⛔ ${crit.length} критич. правок — «Принять» заблокировано.`));}
-  const decSel=el("select",{class:"input",onchange:e=>{v.decision=e.target.value;renderRailOnly();}});
+  const decSel=el("select",{class:"input",disabled:READONLY?"":null,onchange:e=>{v.decision=e.target.value;renderRailOnly();}});
   [["accept","✅ Принять"],["accept_with_edits","✏️ Принять с правками"],["reject","❌ Отклонить"]].forEach(([k,l])=>{const o=el("option",{value:k},l);if(k===v.decision)o.selected=true;if(k==="accept"&&crit.length)o.disabled=true;decSel.append(o);});
   dock.append(el("div",{style:"display:flex;gap:8px;align-items:center"},el("label",{class:"fld",style:"margin:0"},"Вердикт"),decSel));
   return dock;
@@ -1198,7 +1218,7 @@ function hidePill(){const p=$("#pill");if(p)p.style.display="none";}
 document.addEventListener("keydown",e=>{
   if(e.metaKey||e.ctrlKey||e.altKey||e.repeat)return;
   const tag=(e.target&&e.target.tagName)||"";if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag))return;
-  if(typeof S==="undefined"||!S.review||S.screen!=="review")return;   // only while reviewing
+  if(READONLY||typeof S==="undefined"||!S.review||S.screen!=="review")return;   // only while reviewing (not read-only)
   if(e.code==="KeyG"){ if(correctFromSelection())e.preventDefault(); }       // select → tap G/П → правка (G/П has no macOS accent menu)
   else if(e.code==="KeyS"){ e.preventDefault(); startShot(); }              // tap S → скриншот области
 });
@@ -1206,7 +1226,7 @@ function openFormFromPending(){
   if(!pending)return;hidePill();
   const guess=guessCategory(pending.path,pending.selected);
   formDraft={id:uid("cor"),mode:"new",anchor:{json_path:pending.path,json_pointer:pathToPointer(pending.path),fidelity:pending.fidelity||"field",field_kind:fieldKindFor(pending.path),label:pending.label,span:pending.span},category:guess,severity:defaultSeverity(guess),original_value:pending.selected,corrected_value:pending.selected,edit_action:"replace",rationale:"",tags:guessTags(pending.path,pending.selected),confidence:4,source:"human",auto_rule_id:null};
-  if(UI.wideLeft)setWide(false);S.review._tab="fix";render();focusForm();
+  if(UI.wideLeft)setWide(false);S.review._tab="fix";renderRailOnly();focusForm();
 }
 function guessCategory(path,txt){
   const low=(txt||"").toLowerCase(),cand=S.review._candidates.find(c=>c.path===path);
@@ -1242,25 +1262,37 @@ function saveForm(){
   if(f.edit_action!=="flag_only"&&!(f.corrected_value??"").trim()){toast("Заполните «как надо» или нажмите «только флаг»");return;}
   const c={id:f.id,anchor:f.anchor,category:f.category,severity:f.severity,original_value:f.original_value,corrected_value:f.edit_action==="flag_only"?null:f.corrected_value,edit_action:f.edit_action,rationale:f.rationale.trim(),tags:f.tags,confidence:f.confidence,source:f.source,auto_rule_id:f.auto_rule_id,reviewer:REVIEWER,created_at:f._created||nowISO(),updated_at:nowISO()};
   const idx=S.review.corrections.findIndex(x=>x.id===c.id);if(idx>=0)S.review.corrections[idx]=c;else S.review.corrections.push(c);
-  formDraft=null;render();toast(idx>=0?"Правка обновлена":"Правка добавлена");
+  formDraft=null;refreshEdit();toast(idx>=0?"Правка обновлена":"Правка добавлена");
 }
-function cancelForm(){formDraft=null;render();}
-function editCorrection(id){const c=S.review.corrections.find(x=>x.id===id);if(!c)return;formDraft={...c,mode:"edit",_created:c.created_at,tags:[...c.tags]};S.review._tab="fix";render();focusForm();}
-function removeCorrection(id){S.review.corrections=S.review.corrections.filter(c=>c.id!==id);render();}
+function cancelForm(){formDraft=null;renderRailOnly();}
+function editCorrection(id){const c=S.review.corrections.find(x=>x.id===id);if(!c)return;formDraft={...c,mode:"edit",_created:c.created_at,tags:[...c.tags]};S.review._tab="fix";renderRailOnly();focusForm();}
+function removeCorrection(id){S.review.corrections=S.review.corrections.filter(c=>c.id!==id);refreshEdit();}
 function confirmCandidate(c){
   const val=resolvePath(getRoot(),c.path);let original,fidelity,action,corrected;
   if(val!==null&&typeof val==="object"){fidelity="section";original="";action="flag_only";corrected=null;}
   else{fidelity="field";original=val==null?"":String(val);if(c.suggested!=null&&c.suggested!==original){action="replace";corrected=c.suggested;}else{action="flag_only";corrected=null;}}
   formDraft={id:uid("cor"),mode:"new",anchor:{json_path:c.path,json_pointer:pathToPointer(c.path),fidelity,field_kind:fieldKindFor(c.path),label:labelForPath(c.path),span:null},category:c.category,severity:defaultSeverity(c.category),original_value:original,corrected_value:corrected,edit_action:action,rationale:c.message,tags:guessTags(c.path,original),confidence:4,source:"auto_confirmed",auto_rule_id:c.auto_rule_id};
-  S.review._candidates=S.review._candidates.filter(x=>x.id!==c.id);if(UI.wideLeft)setWide(false);S.review._tab="fix";render();focusForm();
+  S.review._candidates=S.review._candidates.filter(x=>x.id!==c.id);if(UI.wideLeft)setWide(false);S.review._tab="fix";renderRailOnly();focusForm();
 }
-function dismissCandidate(c){S.review.dismissed_auto_checks.push({auto_rule_id:c.auto_rule_id,anchor:{json_path:c.path,json_pointer:pathToPointer(c.path),fidelity:"field",field_kind:fieldKindFor(c.path),label:labelForPath(c.path),span:null},message:c.message});S.review._candidates=S.review._candidates.filter(x=>x.id!==c.id);render();}
+function dismissCandidate(c){S.review.dismissed_auto_checks.push({auto_rule_id:c.auto_rule_id,anchor:{json_path:c.path,json_pointer:pathToPointer(c.path),fidelity:"field",field_kind:fieldKindFor(c.path),label:labelForPath(c.path),span:null},message:c.message});S.review._candidates=S.review._candidates.filter(x=>x.id!==c.id);renderRailOnly();}
 function labelForPath(path){const m=$(`.leaf[data-path="${path}"]`);return m?m.getAttribute("data-label"):path;}
 function markActive(cid,on){const m=$(`mark[data-cid="${cid}"]`);if(m)m.classList.toggle("is-active",on);}
 function highlightPath(path,on){const m=$(`.leaf[data-path="${path}"]`);if(m)m.style.boxShadow=on?"inset 0 0 0 2px var(--wonk)":"";}
 document.addEventListener("mouseover",e=>{const mk=e.target.closest?.("mark.hl");if(mk){const cc=$(`.cc[data-cid="${mk.dataset.cid}"]`);if(cc)cc.classList.add("is-active");}});
 document.addEventListener("mouseout",e=>{const mk=e.target.closest?.("mark.hl");if(mk){const cc=$(`.cc[data-cid="${mk.dataset.cid}"]`);if(cc)cc.classList.remove("is-active");}});
 function renderRailOnly(){const r=$(".right");if(r){r.innerHTML="";r.append(renderRail());}updateScoreBadge();autosaveDraft();}
+// Re-render after an edit WITHOUT rebuilding the whole workspace: update the rail, and refresh
+// the parsed doc's highlights while preserving scroll. In the Оригинал view the left pane is left
+// completely untouched (no marks there) — so the PDF doesn't reflow/jump or re-render its canvases.
+function refreshEdit(){
+  renderRailOnly();
+  if(S.review._view==="original")return;
+  // surgically refresh only the leaves whose highlight changed — no doc reflow, no scroll jump
+  document.querySelectorAll(".docscroll .leaf").forEach(old=>{
+    const path=old.getAttribute("data-path"),hasCorr=S.review.corrections.some(c=>c.anchor.json_path===path),hasMark=!!old.querySelector("mark,.hl");
+    if(hasCorr||hasMark)old.replaceWith(leaf(path,old.getAttribute("data-label"),old.getAttribute("data-raw")));
+  });
+}
 
 /* ---- word diff ---- */
 function wordDiff(a,b){a=a||"";b=b||"";const aw=a.split(/(\s+)/),bw=b.split(/(\s+)/),m=aw.length,n=bw.length,dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
