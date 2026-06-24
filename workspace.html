@@ -268,6 +268,7 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
   <div id="tbCtx" class="tb-title"></div>
   <div class="tb-spacer"></div>
   <div id="tbScore" class="scorebadge hidden"></div>
+  <button id="tbShot" class="btn ghost sm hidden" title="Скриншот области оригинала для отзыва">📷 Скриншот</button>
   <button id="tbParams" class="btn ghost sm hidden">⚙ Параметры</button>
   <button id="tbFold" class="btn ghost sm hidden">⤢ Шире план</button>
   <button id="tbReviews" class="btn ghost sm">История: <span id="revCount">0</span></button>
@@ -313,7 +314,6 @@ let SOURCE=null;
 
 /* ---------- correction taxonomy ---------- */
 const CATEGORIES=[
-  {id:"exam_track_violation",tier:"critical",label:"Нарушение трека (NIS≠BIL / ЕНТ-fallback)"},
   {id:"formula_verbatim_violation",tier:"critical",label:"Формула не дословно / переведена"},
   {id:"factual_error",tier:"critical",label:"Фактическая ошибка"},
   {id:"objective_misalignment",tier:"major",label:"Цель/задания не следуют из ЦО"},
@@ -395,7 +395,6 @@ const ALL_RUBRIC_ITEMS=OBSERVATION_RUBRIC.flatMap(s=>s.groups.flatMap(g=>g.items
 const RUBRIC_MAX=ALL_RUBRIC_ITEMS.length*3;
 
 const LESSON_TYPES=[["new_topic","Новая тема"],["practice","Практика"],["reinforcement","Повторение"],["control","Контроль (СОР/СОЧ)"],["combined","Комбинированный"],["generalization","Обобщение"]];
-const EXAM_TRACKS=[["general","Общий"],["ENT","ЕНТ"],["NIS","NIS"],["BIL","BIL"]];
 const LANGS=[["ru","Рус"],["kk","Қаз"],["en","Eng"]];
 const REQUIRED={new_topic:["beginning","main","closure"],control:["tasks"],practice:["main","tasks"],reinforcement:["main"],combined:["beginning","main","closure"],generalization:["main","closure"]};
 // Lesson-type keyword dictionary (from MON «Типы уроков и ключевые слова»). Discriminative phrases per type;
@@ -435,7 +434,6 @@ function detectLessonType(text){
   if(!sum||scores[top]<=0)return null;
   return {type:top,score:scores[top],confidence:+(scores[top]/sum).toFixed(2),hits:hits[top],ranked,scores};
 }
-const ENT_MARKERS=["ент","ұбт","один из пяти","одного из пяти","5 вариантов ответа","пяти вариантов","формат ент","тест нцт","нцт","заполните бланк"];
 
 /* ---------- state ---------- */
 let S={screen:"upload",review:null,reviews:loadReviews()};
@@ -615,7 +613,6 @@ function openMetadataModal(first){
       <div><label class="fld">Класс ${rec(md.grade)}</label><input class="input" id="m_grade" value="${esc(md.grade)}"></div>
       <div style="grid-column:1/3"><label class="fld">Тема ${rec(md.full_topic)}</label><input class="input" id="m_topic" value="${esc(md.full_topic)}"></div>
       <div><label class="fld">Тип урока ${S.review._typeGuess?`<span class="recovered">распознано · ${Math.round(S.review._typeGuess.confidence*100)}%</span>`:`<span class="askbadge">подтвердите</span>`}</label>${sel("m_type",LESSON_TYPES,g.lesson_type_asserted||"new_topic")}</div>
-      <div><label class="fld">Экзам. трек <span class="askbadge">подтвердите</span></label>${sel("m_track",EXAM_TRACKS,"general")}</div>
       <div><label class="fld">Язык контента <span class="askbadge">подтвердите</span></label>${sel("m_lang",LANGS,g.preferred_lang)}</div>
       <div><label class="fld">ID плана (для ML) — опц.</label><input class="input" id="m_lpid" value="${esc(g.lesson_plan_id||"")}" placeholder="lp_…"></div>
     </div>
@@ -624,13 +621,13 @@ function openMetadataModal(first){
   const modal=el("div",{class:"modal"},
     el("div",{class:"mh"},el("h2",{},"Параметры КСП"),first?null:el("button",{class:"iconbtn",onclick:closeModal},"✕")),body,
     el("div",{class:"mf"},el("div",{class:"tb-spacer"}),first?null:el("button",{class:"btn secondary",onclick:closeModal},"Отмена"),el("button",{class:"btn",onclick:submitMetadata},first?"Начать →":"Применить")));
-  showModal(modal,true);setTimeout(()=>$("#m_track")?.focus(),30);
+  showModal(modal,true);setTimeout(()=>$("#m_type")?.focus(),30);
   modal.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.tagName!=="TEXTAREA"){e.preventDefault();submitMetadata();}});
 }
 function submitMetadata(){
   const g=S.review.generation,md=S.review._norm.metadata;
   md.subject=$("#m_subject").value.trim();md.grade=$("#m_grade").value.trim();md.full_topic=$("#m_topic").value.trim();
-  g.subject=md.subject||null;g.grade=md.grade||null;g.lesson_type_asserted=$("#m_type").value;g.exam_track=$("#m_track").value;g.preferred_lang=$("#m_lang").value;g.lesson_plan_id=$("#m_lpid").value.trim()||g.lesson_plan_id||null;
+  g.subject=md.subject||null;g.grade=md.grade||null;g.lesson_type_asserted=$("#m_type").value;g.exam_track=null;g.preferred_lang=$("#m_lang").value;g.lesson_plan_id=$("#m_lpid").value.trim()||g.lesson_plan_id||null;
   S.review._candidates=runLinters(S.review._norm,g);
   closeModal();S.screen="review";render();
 }
@@ -656,13 +653,6 @@ function runLinters(n,g){
   }
   const codes=(n.metadata.learning_objectives.match(/\d+\.\d+\.\d+\.\d+/g)||[]),hay=JSON.stringify(n.stages)+JSON.stringify(n.tasks);
   codes.filter(c=>!hay.includes(c)).forEach(c=>push("objective_coverage","data.metadata.learning_objectives","objective_misalignment",`Цель ${c} возможно не упомянута явно в этапах/заданиях.`));
-  if(g.exam_track==="NIS"||g.exam_track==="BIL")
-    walkLeaves(n,(path,val)=>{
-      const low=String(val).toLowerCase();
-      // whole-WORD match for single-word markers (JS \b fails on Cyrillic) — "ент" must NOT match "презентация"/"эксперимент"
-      const words=new Set(low.split(/[^a-zа-яёәғқңөұүһі0-9]+/i).filter(Boolean));
-      ENT_MARKERS.forEach(mk=>{const hit=mk.includes(" ")?low.includes(mk):words.has(mk);if(hit)push("track_keyword",path,"exam_track_violation",`Маркер ЕНТ «${mk}» в плане трека ${g.exam_track} (ЕНТ-fallback запрещён).`);});
-    });
   walkLeaves(n,(path,val)=>{const s=String(val);if(/(масса|скорост|ускорени|сила|энерги)\s*[×·xX*]\s*(скорост|время|масс|ускорени|путь)/i.test(s))push("formula_worded",path,"formula_verbatim_violation","Формула записана словами вместо символов — перенесите дословно.");});
   // mixed language: only meaningful words of the OTHER script, excluding [tags], «quotes», codes, urls
   // mixed language: longest contiguous run of pure foreign-script WORDS (linear scan; ignores math like 3x2y and [tags]/«values»)
@@ -697,11 +687,12 @@ function _render(){
   $("#revCount").textContent=S.reviews.length;
   const inReview=S.screen==="review"&&S.review;
   $("#tbParams").classList.toggle("hidden",!inReview);
+  $("#tbShot").classList.toggle("hidden",!inReview||!SOURCE||SOURCE.kind!=="pdf");
   $("#tbFold").classList.toggle("hidden",!inReview);
   $("#tbFinish").classList.toggle("hidden",!inReview);
   $("#tbScore").classList.toggle("hidden",!inReview);
   if(inReview){
-    $("#tbCtx").textContent=`${S.review._norm.metadata.subject||"—"} · ${S.review._norm.metadata.grade||"—"} кл · ${tLabel(LESSON_TYPES,S.review.generation.lesson_type_asserted)} · ${S.review.generation.exam_track}`;
+    $("#tbCtx").textContent=`${S.review._norm.metadata.subject||"—"} · ${S.review._norm.metadata.grade||"—"} кл · ${tLabel(LESSON_TYPES,S.review.generation.lesson_type_asserted)}`;
     computeObsTotal();$("#tbScore").textContent=`${S.review.observation.total} / ${RUBRIC_MAX}`;
   }else $("#tbCtx").textContent="";
   if(S.screen==="upload")app.append(renderUpload());
@@ -939,7 +930,7 @@ function renderOriginal(){
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
     box.append(el("div",{class:"orig-bar"},
-      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделяйте текст → «＋ Правка», или сделайте скриншот области для косметической правки."),
+      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст и нажмите C — добавить правку. Или сделайте скриншот области."),
       el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот для отзыва")));
     (async()=>{
       let pdf;
@@ -980,7 +971,12 @@ function renderOriginal(){
 let shotMode=false;
 function startShot(){
   if(shotMode)return;
-  if(!document.querySelector(".original .orig-canvas")){toast("Подождите, оригинал ещё отрисовывается…");return;}
+  if(!document.querySelector(".original .orig-canvas")){
+    // not viewing the original yet → switch to it, then the user taps 📷 again once it renders
+    if(SOURCE&&SOURCE.kind==="pdf"&&S.review){if(S.review._view!=="original"){S.review._view="original";render();}toast("Открыл оригинал — нажмите 📷, когда страница отрисуется");}
+    else toast("Скриншот доступен для PDF-оригинала");
+    return;
+  }
   shotMode=true;
   const overlay=el("div",{class:"shot-overlay"}),boxEl=el("div",{class:"shot-box"}),hint=el("div",{class:"shot-hint"},"Выделите область для скриншота · Esc — отмена");
   overlay.append(boxEl,hint);document.body.append(overlay);
@@ -1106,7 +1102,7 @@ function renderFixTab(){
   const cands=S.review._candidates;
   if(cands.length){const tray=el("details",{class:"tray",open:true});tray.append(el("summary",{},`🤖 Авто-проверки · ${cands.length}`));cands.forEach(c=>tray.append(renderCandidate(c)));scroll.append(tray);}
   S.review.corrections.forEach(c=>scroll.append(renderCorrectionCard(c)));
-  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px"},"Выделите текст слева → «＋ Правка» (",el("span",{class:"kbd"},"C"),"), либо подтвердите авто-проверки."));
+  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px"},"Выделите текст и нажмите ",el("span",{class:"kbd"},"C")," — добавить правку. Либо подтвердите авто-проверки ниже."));
   wrap.append(scroll,renderDock());return wrap;
 }
 function renderCandidate(c){
@@ -1173,22 +1169,32 @@ function fieldForOriginalSelection(selRaw){
   });
   return exact||fuzzy||{path:"data",label:"Документ",raw:selText,span:null,selected:selText,fidelity:"document"};
 }
-function captureSelection(){
-  const sel=window.getSelection();if(!sel||sel.isCollapsed){hidePill();return;}
+// Turn the current text selection into a correction. Returns false if there's nothing to anchor.
+function correctFromSelection(){
+  const sel=window.getSelection();if(!sel||sel.isCollapsed)return false;
   const range=sel.getRangeAt(0),startEl=range.startContainer.nodeType===1?range.startContainer:range.startContainer.parentElement;
   const leafEl=startEl?.closest?.(".leaf");
   if(leafEl&&leafEl.closest(".left")){
     const raw=leafEl.getAttribute("data-raw");let start=offsetInLeaf(leafEl,range.startContainer,range.startOffset),end=offsetInLeaf(leafEl,range.endContainer,range.endOffset);
-    if(start>end)[start,end]=[end,start];if(start===end){hidePill();return;}
+    if(start>end)[start,end]=[end,start];if(start===end)return false;
     pending={path:leafEl.getAttribute("data-path"),label:leafEl.getAttribute("data-label"),raw,span:{start,end},selected:raw.slice(start,end),fidelity:"field"};
   } else if(startEl?.closest?.(".original")){
-    const m=fieldForOriginalSelection(sel.toString());if(!m){hidePill();return;}
+    const m=fieldForOriginalSelection(sel.toString());if(!m)return false;
     pending=m;
-  } else {hidePill();return;}
-  const r=range.getBoundingClientRect(),pill=$("#pill");pill.style.display="block";pill.style.left=(r.left+r.width/2)+"px";pill.style.top=(r.top-8)+"px";
+  } else return false;
+  openFormFromPending();return true;
 }
-function hidePill(){$("#pill").style.display="none";}
-$("#pillBtn").addEventListener("mousedown",e=>{e.preventDefault();openFormFromPending();});
+// Plain selection = just select (copy/read). Hold OR press "C" with a selection = add a correction.
+let cHeld=false;
+function captureSelection(){ if(cHeld)correctFromSelection(); }
+function hidePill(){const p=$("#pill");if(p)p.style.display="none";}
+document.addEventListener("keydown",e=>{
+  if(e.metaKey||e.ctrlKey||e.altKey)return;
+  const tag=(e.target&&e.target.tagName)||"";if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag))return;
+  if(e.key==="c"||e.key==="с"||e.key==="C"||e.key==="С"){cHeld=true;if(correctFromSelection())e.preventDefault();}
+});
+document.addEventListener("keyup",e=>{if(e.key==="c"||e.key==="с"||e.key==="C"||e.key==="С")cHeld=false;});
+window.addEventListener("blur",()=>{cHeld=false;});
 function openFormFromPending(){
   if(!pending)return;hidePill();
   const guess=guessCategory(pending.path,pending.selected);
@@ -1200,10 +1206,9 @@ function guessCategory(path,txt){
   if(cand)return cand.category;
   if(/time_label|duration/.test(path)||/\bмин\b|минут/.test(low))return"time_budget_error";
   if(/=|·|×|√|\\frac/.test(txt))return"formula_verbatim_violation";
-  if(ENT_MARKERS.some(m=>low.includes(m)))return"exam_track_violation";
   return"factual_error";
 }
-function guessTags(path,txt){const t=[],g=S.review.generation;if(g.exam_track&&g.exam_track!=="general")t.push(g.exam_track);if(/=|·|×|√/.test(txt))t.push("formula");return t;}
+function guessTags(path,txt){const t=[];if(/=|·|×|√/.test(txt))t.push("formula");return t;}
 function renderForm(){
   const f=formDraft,wrap=el("div",{class:"form"});
   // top: category chip + severity dot + breadcrumb
@@ -1285,7 +1290,7 @@ function buildReviewText(r){
   const g=r.generation,o=r.observation,topic=(r._norm&&r._norm.metadata&&r._norm.metadata.full_topic)||g.subject||"КСП",L=[];
   L.push("КСП: "+[g.subject,g.grade&&g.grade+" кл",topic].filter(Boolean).join(" · "));
   if(r.reviewer&&(r.reviewer.name||r.reviewer.id))L.push("Проверил(а): "+(r.reviewer.name||r.reviewer.id)+(r.reviewer.school?", "+r.reviewer.school:""));
-  L.push("Тип урока: "+(tLabel(LESSON_TYPES,g.lesson_type_asserted)||"—")+"   Трек: "+(g.exam_track||"—")+"   Язык: "+(g.preferred_lang||"—"));
+  L.push("Тип урока: "+(tLabel(LESSON_TYPES,g.lesson_type_asserted)||"—")+"   Язык: "+(g.preferred_lang||"—"));
   const pct=Math.round((o.total||0)/RUBRIC_MAX*100);
   L.push("Вердикт: "+tLabel([["accept","Принять"],["accept_with_edits","Принять с правками"],["reject","Отклонить"]],r.verdict.decision)+"   ·   Оценка: "+o.total+"/"+RUBRIC_MAX+" ("+pct+"%)");
   if(r.verdict.gate_triggered&&r.verdict.gate_triggered.length)L.push("⚠ Критические нарушения: "+r.verdict.gate_triggered.map(k=>(CAT_BY_ID[k]||{label:k}).label).join(", "));
@@ -1385,6 +1390,7 @@ document.addEventListener("keydown",e=>{
   if(e.key.toLowerCase()==="c"&&pending){e.preventDefault();openFormFromPending();}
 });
 function setWide(v){UI.wideLeft=v;const b=$("#tbFold");if(b)b.textContent=v?"▢ Показать оценку":"⤢ Шире план";const w=document.querySelector(".workspace");if(w)w.classList.toggle("solo",v);}
+$("#tbShot").addEventListener("click",startShot);
 $("#tbParams").addEventListener("click",()=>openMetadataModal(false));
 $("#tbFold").addEventListener("click",()=>setWide(!UI.wideLeft));
 $("#tbFinish").addEventListener("click",openExportModal);
