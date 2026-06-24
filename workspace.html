@@ -268,7 +268,7 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
   <div id="tbCtx" class="tb-title"></div>
   <div class="tb-spacer"></div>
   <div id="tbScore" class="scorebadge hidden"></div>
-  <button id="tbShot" class="btn ghost sm hidden" title="Скриншот области оригинала для отзыва">📷 Скриншот</button>
+  <button id="tbShot" class="btn ghost sm hidden" title="Скриншот области оригинала (клавиша S)">📷 Скриншот</button>
   <button id="tbParams" class="btn ghost sm hidden">⚙ Параметры</button>
   <button id="tbFold" class="btn ghost sm hidden">⤢ Шире план</button>
   <button id="tbReviews" class="btn ghost sm">История: <span id="revCount">0</span></button>
@@ -930,8 +930,8 @@ function renderOriginal(){
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
     box.append(el("div",{class:"orig-bar"},
-      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст и нажмите C — добавить правку. Или сделайте скриншот области."),
-      el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот для отзыва")));
+      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст → клавиша C = правка. Клавиша S или кнопка = скриншот области."),
+      el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот (S)")));
     (async()=>{
       let pdf;
       try{ pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise; }
@@ -1102,7 +1102,7 @@ function renderFixTab(){
   const cands=S.review._candidates;
   if(cands.length){const tray=el("details",{class:"tray",open:true});tray.append(el("summary",{},`🤖 Авто-проверки · ${cands.length}`));cands.forEach(c=>tray.append(renderCandidate(c)));scroll.append(tray);}
   S.review.corrections.forEach(c=>scroll.append(renderCorrectionCard(c)));
-  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px"},"Выделите текст и нажмите ",el("span",{class:"kbd"},"C")," — добавить правку. Либо подтвердите авто-проверки ниже."));
+  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px"},"Выделите текст → клавиша ",el("span",{class:"kbd"},"C")," = правка.  Клавиша ",el("span",{class:"kbd"},"S")," = скриншот области.  Либо подтвердите авто-проверки ниже."));
   wrap.append(scroll,renderDock());return wrap;
 }
 function renderCandidate(c){
@@ -1184,17 +1184,18 @@ function correctFromSelection(){
   } else return false;
   openFormFromPending();return true;
 }
-// Plain selection = just select (copy/read). Hold OR press "C" with a selection = add a correction.
-let cHeld=false;
-function captureSelection(){ if(cHeld)correctFromSelection(); }
+// Plain selection just selects (copy/read). Keyboard shortcuts are TAPS, not holds —
+// so they never trigger the macOS press-and-hold accent menu. e.code is layout-independent
+// (works on RU/EN keyboards); e.repeat ignores held keys so a key only ever fires once.
+function captureSelection(){}                 // mouseup no longer triggers anything
 function hidePill(){const p=$("#pill");if(p)p.style.display="none";}
 document.addEventListener("keydown",e=>{
-  if(e.metaKey||e.ctrlKey||e.altKey)return;
+  if(e.metaKey||e.ctrlKey||e.altKey||e.repeat)return;
   const tag=(e.target&&e.target.tagName)||"";if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag))return;
-  if(e.key==="c"||e.key==="с"||e.key==="C"||e.key==="С"){cHeld=true;if(correctFromSelection())e.preventDefault();}
+  if(typeof S==="undefined"||!S.review||S.screen!=="review")return;   // only while reviewing
+  if(e.code==="KeyC"){ if(correctFromSelection())e.preventDefault(); }       // select → tap C → правка
+  else if(e.code==="KeyS"){ e.preventDefault(); startShot(); }              // tap S → скриншот области
 });
-document.addEventListener("keyup",e=>{if(e.key==="c"||e.key==="с"||e.key==="C"||e.key==="С")cHeld=false;});
-window.addEventListener("blur",()=>{cHeld=false;});
 function openFormFromPending(){
   if(!pending)return;hidePill();
   const guess=guessCategory(pending.path,pending.selected);
