@@ -164,6 +164,7 @@ mark.hl.is-active{box-shadow:0 0 0 2px var(--wonk)}
 .tabbar button .cnt{font-size:11px;background:#fff;border-radius:999px;padding:0 6px;min-width:18px;text-align:center}
 
 .rail-scroll{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.fixhint{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:9px 14px;font-size:12px;color:var(--ink-soft);background:var(--page);border-bottom:1px solid var(--line)}
 .rail-scroll>*{flex-shrink:0}
 
 /* score tab */
@@ -930,7 +931,7 @@ function renderOriginal(){
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
     box.append(el("div",{class:"orig-bar"},
-      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст → клавиша C = правка. Клавиша S или кнопка = скриншот области."),
+      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст → клавиша П/G = правка. Клавиша S или кнопка = скриншот области."),
       el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот (S)")));
     (async()=>{
       let pdf;
@@ -1097,13 +1098,18 @@ function updateScoreBadge(){computeObsTotal();const b=$("#tbScore");if(b)b.textC
 /* ---- fix tab ---- */
 function renderFixTab(){
   const wrap=el("div",{style:"display:flex;flex-direction:column;min-height:0;flex:1"});
+  // persistent prompt — always visible at the top of the Правки tab
+  const hint=el("div",{class:"fixhint"},
+    el("span",{},"Выделите текст → "),el("span",{class:"kbd"},"П"),el("span",{style:"opacity:.5"},"/"),el("span",{class:"kbd"},"G"),el("span",{}," правка"),
+    el("span",{style:"opacity:.4;margin:0 5px"},"·"),
+    el("span",{class:"kbd"},"S"),el("span",{}," скриншот"));
   const scroll=el("div",{class:"rail-scroll"});
   if(formDraft)scroll.append(renderForm());
   const cands=S.review._candidates;
   if(cands.length){const tray=el("details",{class:"tray",open:true});tray.append(el("summary",{},`🤖 Авто-проверки · ${cands.length}`));cands.forEach(c=>tray.append(renderCandidate(c)));scroll.append(tray);}
   S.review.corrections.forEach(c=>scroll.append(renderCorrectionCard(c)));
-  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px"},"Выделите текст → клавиша ",el("span",{class:"kbd"},"C")," = правка.  Клавиша ",el("span",{class:"kbd"},"S")," = скриншот области.  Либо подтвердите авто-проверки ниже."));
-  wrap.append(scroll,renderDock());return wrap;
+  if(!S.review.corrections.length&&!formDraft)scroll.append(el("p",{class:"muted",style:"font-size:13px;margin-top:4px"},"Здесь появятся ваши правки. Либо подтвердите авто-проверки ниже."));
+  wrap.append(hint,scroll,renderDock());return wrap;
 }
 function renderCandidate(c){
   const box=el("div",{class:"cand","data-path":c.path});
@@ -1193,7 +1199,7 @@ document.addEventListener("keydown",e=>{
   if(e.metaKey||e.ctrlKey||e.altKey||e.repeat)return;
   const tag=(e.target&&e.target.tagName)||"";if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag))return;
   if(typeof S==="undefined"||!S.review||S.screen!=="review")return;   // only while reviewing
-  if(e.code==="KeyC"){ if(correctFromSelection())e.preventDefault(); }       // select → tap C → правка
+  if(e.code==="KeyG"){ if(correctFromSelection())e.preventDefault(); }       // select → tap G/П → правка (G/П has no macOS accent menu)
   else if(e.code==="KeyS"){ e.preventDefault(); startShot(); }              // tap S → скриншот области
 });
 function openFormFromPending(){
