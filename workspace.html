@@ -711,6 +711,7 @@ function _render(){
   $("#tbShot").classList.toggle("hidden",!inReview||READONLY||!SOURCE||SOURCE.kind!=="pdf");
   $("#tbFold").classList.toggle("hidden",!inReview);
   $("#tbFinish").classList.toggle("hidden",!inReview||READONLY);
+  $("#tbFinish").textContent=EMBED?"✓ Завершить и отправить":"Готово → JSON";   // teacher-friendly label
   $("#tbScore").classList.toggle("hidden",!inReview);
   if(inReview){
     $("#tbCtx").textContent=`${S.review._norm.metadata.subject||"—"} · ${S.review._norm.metadata.grade||"—"} кл · ${tLabel(LESSON_TYPES,S.review.generation.lesson_type_asserted)}`;
@@ -1357,9 +1358,29 @@ function renderReviewTextNode(review){
   }
   return wrap;
 }
+// Simple teacher-facing submit dialog — readable summary + one clear action. No JSON/Diff/contract jargon.
+function openTeacherSubmit(review,inv,allOk){
+  const body=el("div",{class:"mb"});
+  body.append(el("p",{class:"muted",style:"margin:0 0 12px;font-size:13px"},"Проверьте сводку и отправьте её ML-команде. Черновик автосохраняется — ничего не потеряется."));
+  body.append(renderReviewTextNode(review));
+  body.append(allOk
+    ? el("div",{style:"margin-top:12px;padding:9px 12px;border-radius:9px;background:#eaf7ef;color:#0f6b48;font-size:13px;font-weight:600"},"✓ Всё готово к отправке")
+    : el("div",{style:"margin-top:12px;padding:9px 12px;border-radius:9px;background:#fff3f0;color:#b3401f;font-size:13px"},"⚠ "+((inv.find(([ok])=>!ok)||[,""])[1])+" — поправьте перед отправкой."));
+  const modal=el("div",{class:"modal wide"},
+    el("div",{class:"mh"},el("h2",{},"Отправить проверку ML-команде"),el("span",{class:"chip "+(review.observation.total>=68?"good":review.observation.total>=41?"warn":"bad")},`${review.observation.total}/${RUBRIC_MAX}`),el("button",{class:"iconbtn",onclick:closeModal},"✕")),
+    body,
+    el("div",{class:"mf"},el("button",{class:"btn secondary",onclick:closeModal},"← Продолжить правки"),el("span",{style:"flex:1"}),
+      el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
+        if(!allOk){toast("Сначала поправьте: "+((inv.find(([ok])=>!ok)||[,""])[1]));return;}
+        const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");
+      }},"📤 Отправить ML-команде")));
+  showModal(modal);
+}
 function openExportModal(){
-  const review=buildReview(),inv=checkInvariants(review);exportTab="text";
+  const review=buildReview(),inv=checkInvariants(review);
   const allOk=inv.every(([ok])=>ok);   // contract must hold before we hand data to ML
+  if(EMBED)return openTeacherSubmit(review,inv,allOk);   // teachers: simplified submit dialog
+  exportTab="text";
   const view=el("div",{style:"margin-top:12px"});
   const body=el("div",{class:"mb"},el("div",{class:"tabs"},el("button",{onclick:()=>{exportTab="text";paint();}},"📋 Для ML (текст)"),el("button",{onclick:()=>{exportTab="diff";paint();}},"Diff"),el("button",{onclick:()=>{exportTab="json";paint();}},"JSON")),view);
   const invBox=el("div",{class:"invlist"});inv.forEach(([ok,l])=>invBox.append(el("div",{class:"inv "+(ok?"ok":"bad")},el("span",{class:"mk"},ok?"✓":"!"),el("span",{},l))));
@@ -1453,6 +1474,8 @@ const SYNTH_NIS={
     {task_number:2,difficulty:"easy",statement:"Выберите один правильный ответ из пяти (формат ЕНТ): импульс измеряется в … 1) Н 2) Дж 3) кг·м/с 4) Вт 5) Па",solution:"3) кг·м/с"}]};
 
 if(EMBED)document.body.classList.add("embed");render();
+// Auto-save: the draft is saved on every change (autosaveDraft). Also save + gently confirm every 5 min.
+if(!READONLY)setInterval(()=>{if(S.review&&S.screen==="review"){autosaveDraft();const t=new Date();toast("💾 Черновик автосохранён · "+String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0"));}},300000);
 // Host (React app) can push a previously-saved review back in to reopen it.
 window.addEventListener("message",function(e){
   if(e.origin!==window.location.origin||e.source!==window.parent)return;   // only the same-origin host app may drive the engine
