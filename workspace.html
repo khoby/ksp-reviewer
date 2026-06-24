@@ -94,11 +94,19 @@ textarea.input{resize:vertical;min-height:54px;line-height:1.45}
 .vt.on{background:#fff;color:var(--wonk);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .original{padding:2px 0}
 .orig-note{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px}
+.orig-bar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.orig-bar .orig-note{margin:0;flex:1;min-width:200px}
+.btn.xs{padding:4px 10px;font-size:12px}
 .orig-pagewrap{position:relative;margin:0 auto 14px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden;max-width:100%}
-.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;text-align:initial}
+.orig-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1;text-align:initial;z-index:1}
 .textLayer span,.textLayer br{color:#1c1c28;position:absolute;white-space:pre;cursor:text;transform-origin:0 0}
-.textLayer span::selection{background:rgba(100,96,255,.35)}
-.textLayer span::-moz-selection{background:rgba(100,96,255,.35)}
+.orig-pagewrap.has-canvas .textLayer span{color:transparent}   /* canvas shows; text stays selectable */
+.textLayer span::selection{background:rgba(100,96,255,.4)}
+.textLayer span::-moz-selection{background:rgba(100,96,255,.4)}
+.shot-overlay{position:fixed;inset:0;z-index:9998;cursor:crosshair;background:rgba(24,24,40,.10)}
+.shot-box{position:fixed;display:none;border:2px solid var(--wonk);background:rgba(100,96,255,.14);z-index:9999;pointer-events:none}
+.shot-hint{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:#1c1c28;color:#fff;padding:7px 14px;border-radius:9px;font-size:13px;font-weight:600;z-index:10000;pointer-events:none}
 .orig-docx{font-size:14px;line-height:1.5}
 .orig-docx table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
 .orig-docx td,.orig-docx th{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
@@ -930,26 +938,34 @@ function renderOriginal(){
   const box=el("div",{class:"original"});
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
-    box.append(el("div",{class:"orig-note"},"📄 Оригинал PDF — текст на своих местах, можно выделять и нажимать «＋ Правка». Точная вёрстка — в .docx."));
+    box.append(el("div",{class:"orig-bar"},
+      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделяйте текст → «＋ Правка», или сделайте скриншот области для косметической правки."),
+      el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот для отзыва")));
     (async()=>{
       let pdf;
       try{ pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise; }
       catch(e){ console.error(e); box.append(el("p",{class:"muted"},"Не удалось открыть PDF.")); return; }
       const wpx=Math.max(360,(box.clientWidth||760)-4);
-      const renderPage=async(wrap)=>{
-        const i=+wrap.dataset.page;
+      // pixel-faithful canvas (for cosmetic/layout review) BEHIND a selectable text layer.
+      // Per-page timeout: if a canvas stalls, keep the visible text fallback so nothing blanks out.
+      const drawCanvas=async(wrap,page,vp)=>{
+        const cv=el("canvas",{class:"orig-canvas"});cv.width=Math.ceil(vp.width);cv.height=Math.ceil(vp.height);
+        wrap.insertBefore(cv,wrap.firstChild);
+        try{
+          await Promise.race([page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise,new Promise((_,rej)=>setTimeout(()=>rej(new Error("to")),15000))]);
+          wrap.classList.add("has-canvas");   // canvas drawn → text becomes transparent overlay (still selectable)
+        }catch(e){ console.warn("orig canvas",e); cv.remove(); }   // fall back to the visible text layer
+      };
+      for(let i=1;i<=pdf.numPages;i++){
+        const wrap=el("div",{class:"orig-pagewrap"});wrap.dataset.page=i;box.append(wrap);
         try{
           const page=await pdf.getPage(i),v1=page.getViewport({scale:1}),scale=Math.min(2,wpx/v1.width),vp=page.getViewport({scale});
-          wrap.style.width=Math.ceil(vp.width)+"px";wrap.style.height=Math.ceil(vp.height)+"px";wrap.style.minHeight="";wrap.style.setProperty("--scale-factor",scale);
+          wrap.style.width=Math.ceil(vp.width)+"px";wrap.style.height=Math.ceil(vp.height)+"px";wrap.style.setProperty("--scale-factor",scale);
           const tl=el("div",{class:"textLayer"});wrap.append(tl);
           const tc=await page.getTextContent();
-          await pdfjsLib.renderTextLayer({textContentSource:tc,textContent:tc,container:tl,viewport:vp}).promise;   // positioned, selectable text (no heavy canvas)
-        }catch(e){ console.warn("orig page",i,e); wrap.append(el("div",{class:"muted",style:"padding:16px"},"Стр. "+i+" — не удалось отобразить")); }
-      };
-      // render text layers sequentially — light (no canvas), page 1 appears first, rest stream in
-      for(let i=1;i<=pdf.numPages;i++){
-        const wrap=el("div",{class:"orig-pagewrap"});wrap.dataset.page=i;wrap.style.minHeight="120px";box.append(wrap);
-        await renderPage(wrap);
+          await pdfjsLib.renderTextLayer({textContentSource:tc,textContent:tc,container:tl,viewport:vp}).promise;   // selectable text first (fast)
+          drawCanvas(wrap,page,vp);   // then pixel render behind it (async, non-blocking)
+        }catch(e){ console.warn("orig page",i,e); wrap.append(el("div",{class:"muted",style:"padding:16px"},"Стр. "+i)); }
       }
     })();
     return box;
@@ -959,6 +975,48 @@ function renderOriginal(){
     const d=el("div",{class:"orig-docx"});d.appendChild(safeDocFrag(SOURCE.html));box.append(d);return box;
   }
   box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));return box;
+}
+/* ---------- screenshot tool: drag a region over the rendered original → cosmetic correction ---------- */
+let shotMode=false;
+function startShot(){
+  if(shotMode)return;
+  if(!document.querySelector(".original .orig-canvas")){toast("Подождите, оригинал ещё отрисовывается…");return;}
+  shotMode=true;
+  const overlay=el("div",{class:"shot-overlay"}),boxEl=el("div",{class:"shot-box"}),hint=el("div",{class:"shot-hint"},"Выделите область для скриншота · Esc — отмена");
+  overlay.append(boxEl,hint);document.body.append(overlay);
+  let sx=0,sy=0,drawing=false;
+  const done=()=>{overlay.remove();shotMode=false;document.removeEventListener("keydown",onKey);};
+  const onKey=e=>{if(e.key==="Escape")done();};
+  document.addEventListener("keydown",onKey);
+  overlay.addEventListener("mousedown",e=>{drawing=true;sx=e.clientX;sy=e.clientY;boxEl.style.display="block";boxEl.style.left=sx+"px";boxEl.style.top=sy+"px";boxEl.style.width="0";boxEl.style.height="0";});
+  overlay.addEventListener("mousemove",e=>{if(!drawing)return;const x=Math.min(sx,e.clientX),y=Math.min(sy,e.clientY);boxEl.style.left=x+"px";boxEl.style.top=y+"px";boxEl.style.width=Math.abs(e.clientX-sx)+"px";boxEl.style.height=Math.abs(e.clientY-sy)+"px";});
+  overlay.addEventListener("mouseup",e=>{const rect={x:Math.min(sx,e.clientX),y:Math.min(sy,e.clientY),w:Math.abs(e.clientX-sx),h:Math.abs(e.clientY-sy)};done();if(rect.w<8||rect.h<8)return;captureRegion(rect);});
+}
+function captureRegion(rect){
+  let best=null,bestArea=0;
+  document.querySelectorAll(".original .orig-canvas").forEach(cv=>{
+    const r=cv.getBoundingClientRect();
+    const ix=Math.max(rect.x,r.left),iy=Math.max(rect.y,r.top),ax=Math.min(rect.x+rect.w,r.right),ay=Math.min(rect.y+rect.h,r.bottom),iw=ax-ix,ih=ay-iy;
+    if(iw>0&&ih>0&&iw*ih>bestArea){bestArea=iw*ih;best={cv,r,ix,iy,iw,ih};}
+  });
+  if(!best){toast("Область вне страницы — попробуйте ещё раз");return;}
+  const {cv,r,ix,iy,iw,ih}=best, kx=cv.width/r.width, ky=cv.height/r.height;
+  const out=el("canvas");out.width=Math.max(1,Math.round(iw*kx));out.height=Math.max(1,Math.round(ih*ky));
+  try{ out.getContext("2d").drawImage(cv,(ix-r.left)*kx,(iy-r.top)*ky,iw*kx,ih*ky,0,0,out.width,out.height); }
+  catch(e){ console.error(e); toast("Не удалось сделать скриншот"); return; }
+  openShotForm(out.toDataURL("image/png"));
+}
+function openShotForm(dataUrl){
+  const ta=el("textarea",{class:"input",placeholder:"Что не так с оформлением? (комментарий для ML)",style:"min-height:70px"});
+  const modal=el("div",{class:"modal"},
+    el("div",{class:"mh"},el("h2",{},"Скриншот — косметическая правка"),el("button",{class:"iconbtn",onclick:closeModal},"✕")),
+    el("div",{class:"mb"},el("img",{src:dataUrl,style:"max-width:100%;display:block;border:1px solid var(--line);border-radius:8px"}),el("div",{class:"fld",style:"margin-top:12px"},"Комментарий"),ta),
+    el("div",{class:"mf"},el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:closeModal},"Отмена"),el("button",{class:"btn",onclick:()=>{saveShotCorrection(dataUrl,ta.value);closeModal();}},"Сохранить правку")));
+  showModal(modal);setTimeout(()=>ta.focus(),30);
+}
+function saveShotCorrection(dataUrl,comment){
+  S.review.corrections.push({id:uid("cor"),anchor:{json_path:"data",json_pointer:pathToPointer("data"),fidelity:"document",field_kind:"document",label:"Оформление (скриншот)",span:null},category:"formatting",severity:"minor",original_value:"",corrected_value:null,edit_action:"flag_only",rationale:(comment||"").trim()||"косметическая правка (скриншот)",tags:["cosmetic","screenshot"],confidence:4,source:"human",auto_rule_id:null,evidence_image:dataUrl,reviewer:REVIEWER,created_at:nowISO(),updated_at:nowISO()});
+  S.review._tab="fix";render();toast("Скриншот-правка добавлена");
 }
 function renderDoc(){
   const n=S.review._norm,doc=el("div",{class:"doc"});
@@ -1060,9 +1118,10 @@ function renderCandidate(c){
 }
 function renderCorrectionCard(c){
   const box=el("div",{class:"cc","data-cid":c.id});
-  box.append(el("div",{class:"cch"},el("span",{class:"chip "+sevChip(c.severity)},tLabel([["critical","крит"],["major","важн"],["minor","мелк"]],c.severity)),el("span",{style:"font-weight:600;font-size:12.5px;flex:1"},CAT_BY_ID[c.category].label),c.source==="auto_confirmed"?el("span",{class:"chip soft",title:"из авто-проверки"},"🤖"):null));
+  box.append(el("div",{class:"cch"},el("span",{class:"chip "+sevChip(c.severity)},tLabel([["critical","крит"],["major","важн"],["minor","мелк"]],c.severity)),el("span",{style:"font-weight:600;font-size:12.5px;flex:1"},(CAT_BY_ID[c.category]||{label:c.category}).label),c.source==="auto_confirmed"?el("span",{class:"chip soft",title:"из авто-проверки"},"🤖"):null));
   box.append(el("div",{class:"mono muted",style:"font-size:11px"},c.anchor.label));
-  box.append(c.edit_action==="flag_only"?el("div",{class:"diff muted"},"⚑ только флаг"):el("div",{class:"diff",html:wordDiff(c.original_value,c.corrected_value??"")}));
+  if(c.evidence_image)box.append(el("img",{src:c.evidence_image,style:"max-width:100%;display:block;margin:6px 0;border:1px solid var(--line);border-radius:6px"}));
+  else box.append(c.edit_action==="flag_only"?el("div",{class:"diff muted"},"⚑ только флаг"):el("div",{class:"diff",html:wordDiff(c.original_value,c.corrected_value??"")}));
   if(c.rationale)box.append(el("div",{class:"muted",style:"font-size:12.5px"},"💬 "+c.rationale));
   box.append(el("div",{class:"ccfoot"},(c.tags||[]).map(t=>el("span",{class:"chip tag"},"#"+t)),el("span",{style:"flex:1"}),el("button",{class:"iconbtn",onclick:()=>editCorrection(c.id)},"✎"),el("button",{class:"iconbtn",onclick:()=>removeCorrection(c.id)},"🗑")));
   box.addEventListener("mouseenter",()=>{box.classList.add("is-active");markActive(c.id,true);});box.addEventListener("mouseleave",()=>{box.classList.remove("is-active");markActive(c.id,false);});
@@ -1221,19 +1280,54 @@ function checkInvariants(review){
   inv.push([review.corrections.every(c=>pathToPointer(c.anchor.json_path)===c.anchor.json_pointer),"json_path и json_pointer согласованы"]);
   return inv;
 }
+// human-readable review for the ML team (they read + act manually, not parse JSON)
+function buildReviewText(r){
+  const g=r.generation,o=r.observation,topic=(r._norm&&r._norm.metadata&&r._norm.metadata.full_topic)||g.subject||"КСП",L=[];
+  L.push("КСП: "+[g.subject,g.grade&&g.grade+" кл",topic].filter(Boolean).join(" · "));
+  if(r.reviewer&&(r.reviewer.name||r.reviewer.id))L.push("Проверил(а): "+(r.reviewer.name||r.reviewer.id)+(r.reviewer.school?", "+r.reviewer.school:""));
+  L.push("Тип урока: "+(tLabel(LESSON_TYPES,g.lesson_type_asserted)||"—")+"   Трек: "+(g.exam_track||"—")+"   Язык: "+(g.preferred_lang||"—"));
+  const pct=Math.round((o.total||0)/RUBRIC_MAX*100);
+  L.push("Вердикт: "+tLabel([["accept","Принять"],["accept_with_edits","Принять с правками"],["reject","Отклонить"]],r.verdict.decision)+"   ·   Оценка: "+o.total+"/"+RUBRIC_MAX+" ("+pct+"%)");
+  if(r.verdict.gate_triggered&&r.verdict.gate_triggered.length)L.push("⚠ Критические нарушения: "+r.verdict.gate_triggered.map(k=>(CAT_BY_ID[k]||{label:k}).label).join(", "));
+  L.push("\nОЦЕНКА ПО РАЗДЕЛАМ:");
+  (o.sections||[]).forEach(s=>L.push("  • "+s.title+": "+s.score));
+  if((o.recommendations||"").trim())L.push("Рекомендации наблюдателя: "+o.recommendations.trim());
+  L.push("\nПРАВКИ ("+r.corrections.length+"):");
+  if(!r.corrections.length)L.push("  — нет");
+  r.corrections.forEach((c,i)=>{
+    L.push("\n"+(i+1)+". ["+tLabel([["critical","критич."],["major","важно"],["minor","мелочь"]],c.severity)+"] "+(CAT_BY_ID[c.category]||{label:c.category}).label+"  —  "+c.anchor.label);
+    if(c.evidence_image)L.push("   📷 косметика, скриншот приложен");
+    else if(c.edit_action==="flag_only")L.push("   ⚑ только флаг (без замены)");
+    else{ L.push("   было:  «"+(c.original_value||"")+"»"); L.push("   стало: «"+(c.corrected_value==null?"":c.corrected_value)+"»"); }
+    if((c.rationale||"").trim())L.push("   💬 "+c.rationale.trim());
+  });
+  return L.join("\n");
+}
+function renderReviewTextNode(review){
+  const wrap=el("div",{style:"max-height:54vh;overflow:auto"});
+  wrap.append(el("pre",{style:"white-space:pre-wrap;font-family:var(--font-body);font-size:13px;line-height:1.55;margin:0"},buildReviewText(review)));
+  const shots=review.corrections.filter(c=>c.evidence_image);
+  if(shots.length){
+    wrap.append(el("div",{class:"fld",style:"margin:16px 0 6px"},"Скриншоты ("+shots.length+")"));
+    shots.forEach((c,i)=>{wrap.append(el("div",{class:"muted",style:"font-size:12px;margin-top:8px"},"📷 "+(i+1)+". "+(c.rationale||"")),el("img",{src:c.evidence_image,style:"max-width:100%;display:block;margin:4px 0;border:1px solid var(--line);border-radius:6px"}));});
+  }
+  return wrap;
+}
 function openExportModal(){
-  const review=buildReview(),inv=checkInvariants(review);exportTab="json";
+  const review=buildReview(),inv=checkInvariants(review);exportTab="text";
   const allOk=inv.every(([ok])=>ok);   // contract must hold before we hand data to ML
   const view=el("div",{style:"margin-top:12px"});
-  const body=el("div",{class:"mb"},el("div",{class:"tabs"},el("button",{onclick:()=>{exportTab="json";paint();}},"JSON"),el("button",{onclick:()=>{exportTab="diff";paint();}},"Diff")),view);
+  const body=el("div",{class:"mb"},el("div",{class:"tabs"},el("button",{onclick:()=>{exportTab="text";paint();}},"📋 Для ML (текст)"),el("button",{onclick:()=>{exportTab="diff";paint();}},"Diff"),el("button",{onclick:()=>{exportTab="json";paint();}},"JSON")),view);
   const invBox=el("div",{class:"invlist"});inv.forEach(([ok,l])=>invBox.append(el("div",{class:"inv "+(ok?"ok":"bad")},el("span",{class:"mk"},ok?"✓":"!"),el("span",{},l))));
   body.append(el("div",{style:"margin-top:14px"},el("div",{class:"fld"},"Инварианты контракта (проверяет ML-команда)"),invBox));
   const json=JSON.stringify(review,null,2);
-  function paint(){body.querySelectorAll(".tabs button").forEach((b,k)=>b.classList.toggle("on",(k===0)===(exportTab==="json")));view.innerHTML="";view.append(exportTab==="json"?el("pre",{class:"json",html:syntaxJSON(review)}):renderExportDiff(review));}
+  const order=["text","diff","json"];
+  function paint(){body.querySelectorAll(".tabs button").forEach((b,k)=>b.classList.toggle("on",order[k]===exportTab));view.innerHTML="";view.append(exportTab==="json"?el("pre",{class:"json",html:syntaxJSON(review)}):exportTab==="diff"?renderExportDiff(review):renderReviewTextNode(review));}
+  const fname=`ksp-review_${review.generation.lesson_plan_id||review.review_id}`;
   const modal=el("div",{class:"modal wide"},
     el("div",{class:"mh"},el("h2",{},"Экспорт оценки и правок"),el("span",{class:"chip "+(review.observation.total>=68?"good":review.observation.total>=41?"warn":"bad")},`${review.observation.total}/${RUBRIC_MAX}`),el("span",{class:"chip "+(review.verdict.decision==="reject"?"bad":review.verdict.decision==="accept"?"good":"warn")},tLabel([["accept","Принять"],["accept_with_edits","С правками"],["reject","Отклонить"]],review.verdict.decision)),el("button",{class:"iconbtn",onclick:closeModal},"✕")),
     body,
-    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(json);toast("JSON скопирован");}},"⧉ Копировать"),el("button",{class:"btn secondary",onclick:()=>download(`ksp-review_${review.generation.lesson_plan_id||review.review_id}.json`,json)},"⭳ Скачать"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
+    el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(buildReviewText(review));toast("Текст скопирован");}},"⧉ Копировать текст"),el("button",{class:"btn secondary",onclick:()=>download(fname+".txt",buildReviewText(review))},"⭳ .txt"),el("button",{class:"btn secondary",onclick:()=>download(fname+".json",json)},"⭳ JSON"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
       if(!allOk){toast("Сначала исправьте контракт: "+((inv.find(([ok])=>!ok)||[,""])[1]));return;}
       if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");}
       else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");
@@ -1243,7 +1337,7 @@ function openExportModal(){
 function renderExportDiff(review){
   const box=el("div",{style:"display:flex;flex-direction:column;gap:10px;max-height:52vh;overflow:auto"});
   if(!review.corrections.length)box.append(el("p",{class:"muted"},"Правок нет."));
-  review.corrections.forEach(c=>box.append(el("div",{class:"cc"},el("div",{class:"cch"},el("span",{class:"chip "+sevChip(c.severity)},c.severity),el("span",{style:"font-weight:600;flex:1"},CAT_BY_ID[c.category].label)),el("div",{class:"mono muted",style:"font-size:11px"},c.anchor.json_path),c.edit_action==="flag_only"?el("div",{class:"muted"},"⚑ только флаг"):el("div",{class:"diff",html:wordDiff(c.original_value,c.corrected_value??"")}),c.rationale?el("div",{class:"muted",style:"font-size:12.5px"},"💬 "+c.rationale):null)));
+  review.corrections.forEach(c=>box.append(el("div",{class:"cc"},el("div",{class:"cch"},el("span",{class:"chip "+sevChip(c.severity)},c.severity),el("span",{style:"font-weight:600;flex:1"},(CAT_BY_ID[c.category]||{label:c.category}).label)),el("div",{class:"mono muted",style:"font-size:11px"},c.anchor.json_path),c.evidence_image?el("img",{src:c.evidence_image,style:"max-width:100%;display:block;border:1px solid var(--line);border-radius:6px"}):c.edit_action==="flag_only"?el("div",{class:"muted"},"⚑ только флаг"):el("div",{class:"diff",html:wordDiff(c.original_value,c.corrected_value??"")}),c.rationale?el("div",{class:"muted",style:"font-size:12.5px"},"💬 "+c.rationale):null)));
   return box;
 }
 function finishReview(){const review=buildReview();review._norm=S.review._norm;/* keep plan for re-open */const idx=S.reviews.findIndex(r=>r.review_id===review.review_id);if(idx>=0)S.reviews[idx]=review;else S.reviews.unshift(review);saveReviews();clearDraft();$("#revCount").textContent=S.reviews.length;toast("Сохранено в историю");}
