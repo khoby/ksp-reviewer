@@ -107,6 +107,11 @@ textarea.input{resize:vertical;min-height:54px;line-height:1.45}
 .shot-overlay{position:fixed;inset:0;z-index:9998;cursor:crosshair;background:rgba(24,24,40,.10)}
 .shot-box{position:fixed;display:none;border:2px solid var(--wonk);background:rgba(100,96,255,.14);z-index:9999;pointer-events:none}
 .shot-hint{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:#1c1c28;color:#fff;padding:7px 14px;border-radius:9px;font-size:13px;font-weight:600;z-index:10000;pointer-events:none}
+/* marquee box-select: drag a rectangle over the original → collects the text spans inside (no fiddly native selection) */
+.mq-box{position:fixed;z-index:9999;border:2px solid var(--wonk);background:rgba(100,96,255,.12);pointer-events:none;border-radius:3px}
+.mq-hit{background:rgba(100,96,255,.34)!important;border-radius:2px;color:transparent}
+.original.mq-on .textLayer span{cursor:crosshair}
+.original.mq-on .orig-pagewrap{cursor:crosshair}
 .orig-docx{font-size:14px;line-height:1.5}
 .orig-docx table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
 .orig-docx td,.orig-docx th{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
@@ -951,9 +956,11 @@ function renderOriginal(){
   const box=el("div",{class:"original"});
   if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
   if(SOURCE.kind==="pdf"){
+    box.classList.add("mq-on");                 // drag-a-box text selection (easier than native selection over the canvas)
     box.append(el("div",{class:"orig-bar"},
-      el("span",{class:"orig-note"},"📄 Оригинал PDF — как загружено. Выделите текст → клавиша П/G = правка. Клавиша S или кнопка = скриншот области."),
+      el("span",{class:"orig-note"},"📄 Оригинал PDF. Обведите рамкой текст с ошибкой → откроется правка. Клавиша S или 📷 — скриншот области."),
       el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот (S)")));
+    enableMarquee(box);
     (async()=>{
       let pdf;
       try{ pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise; }
@@ -988,6 +995,48 @@ function renderOriginal(){
     const d=el("div",{class:"orig-docx"});d.appendChild(safeDocFrag(SOURCE.html));box.append(d);return box;
   }
   box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));return box;
+}
+/* ---------- marquee box-select: drag a rectangle over the PDF original → grab the text inside → правка ----------
+   Native text selection over pdf.js's transparent text layer (sitting on the canvas) is fiddly and jumpy.
+   Instead the teacher just draws a box around the wrong text; we collect every text span the box touches,
+   join them in reading order, and open the correction form pre-filled. Forgiving — rough boxes are fine. */
+function mqPos(b,x0,y0,x1,y1){b.style.left=Math.min(x0,x1)+"px";b.style.top=Math.min(y0,y1)+"px";b.style.width=Math.abs(x1-x0)+"px";b.style.height=Math.abs(y1-y0)+"px";}
+function spansInRect(rect){
+  const hits=[];
+  document.querySelectorAll(".original .textLayer span").forEach(s=>{
+    if(!s.textContent.trim())return;
+    const r=s.getBoundingClientRect();
+    if(r.left<rect.right&&r.right>rect.left&&r.top<rect.bottom&&r.bottom>rect.top)hits.push({s,r});
+  });
+  hits.sort((a,b)=>Math.abs(a.r.top-b.r.top)>6?a.r.top-b.r.top:a.r.left-b.r.left);   // reading order: row, then left
+  let out="",lastTop=null,lastRight=null;
+  hits.forEach(({s,r})=>{
+    if(lastTop!==null){ if(Math.abs(r.top-lastTop)>6)out+=" "; else if(r.left-lastRight>1.5)out+=" "; }
+    out+=s.textContent; lastTop=r.top; lastRight=r.right;
+  });
+  return {text:out.replace(/\s+/g," ").trim(),els:hits.map(h=>h.s)};
+}
+function flashSpans(els){els.forEach(s=>s.classList.add("mq-hit"));setTimeout(()=>els.forEach(s=>s.classList.remove("mq-hit")),700);}
+function enableMarquee(box){
+  let sx=0,sy=0,drawing=false,boxEl=null;
+  box.addEventListener("mousedown",e=>{
+    if(e.button!==0||READONLY)return;
+    if(!(e.target.closest&&e.target.closest(".orig-pagewrap")))return;   // only over a rendered page, not the toolbar
+    drawing=true;sx=e.clientX;sy=e.clientY;e.preventDefault();            // suppress the jumpy native selection
+    boxEl=el("div",{class:"mq-box"});document.body.append(boxEl);mqPos(boxEl,sx,sy,sx,sy);
+    const onMove=ev=>{if(drawing)mqPos(boxEl,sx,sy,ev.clientX,ev.clientY);};
+    const onUp=ev=>{
+      drawing=false;document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);
+      if(boxEl){boxEl.remove();boxEl=null;}
+      const rect={left:Math.min(sx,ev.clientX),top:Math.min(sy,ev.clientY),right:Math.max(sx,ev.clientX),bottom:Math.max(sy,ev.clientY)};
+      if(rect.right-rect.left<6&&rect.bottom-rect.top<6)return;            // a click, not a drag
+      const {text,els}=spansInRect(rect);
+      if(text.length<2){toast("В рамке нет текста — обведите слова целиком");return;}
+      flashSpans(els);
+      pending=fieldForOriginalSelection(text);openFormFromPending();
+    };
+    document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+  });
 }
 /* ---------- screenshot tool: drag a region over the rendered original → cosmetic correction ---------- */
 let shotMode=false;
@@ -1142,8 +1191,9 @@ function updateScoreBadge(){computeObsTotal();const b=$("#tbScore");if(b)b.textC
 /* ---- fix tab ---- */
 function renderFixTab(){
   const wrap=el("div",{style:"display:flex;flex-direction:column;min-height:0;flex:1"});
-  // persistent prompt — always visible at the top of the Правки tab
-  const hint=el("div",{class:"fixhint"},
+  // persistent prompt — always visible at the top of the Правки tab (wording adapts to the PDF-original box-select)
+  const origPdf=S.review._view==="original"&&SOURCE&&SOURCE.kind==="pdf";
+  const hint=origPdf?el("div",{class:"fixhint"},el("span",{},"Обведите рамкой текст с ошибкой → правка"),el("span",{style:"opacity:.4;margin:0 5px"},"·"),el("span",{class:"kbd"},"S"),el("span",{}," скриншот области")):el("div",{class:"fixhint"},
     el("span",{},"Выделите текст → "),el("span",{class:"kbd"},"П"),el("span",{style:"opacity:.5"},"/"),el("span",{class:"kbd"},"G"),el("span",{}," правка"),
     el("span",{style:"opacity:.4;margin:0 5px"},"·"),
     el("span",{class:"kbd"},"S"),el("span",{}," скриншот"));
