@@ -277,7 +277,7 @@ pre.json .k{color:#a3a0ff}pre.json .s{color:#86e1b0}pre.json .n{color:#f0b86e}pr
 </div>
 
 <div id="app"></div>
-<div id="pill"><button id="pillBtn">＋ Правка <span class="kbd">C</span></button></div>
+<!-- legacy selection pill removed — correction is now triggered by the G/П key (see keydown handler) -->
 <div id="toast"></div>
 
 <script>/* mammoth.browser.min.js inlined for offline .docx parsing */
@@ -1084,7 +1084,7 @@ function renderRail(){
   computeObsTotal();
   const tab=S.review._tab;
   const bar=el("div",{class:"tabbar"},
-    el("button",{class:tab==="score"?"on":"",onclick:()=>{S.review._tab="score";renderRailOnly();}},"Оценка",el("span",{class:"cnt"},`${S.review.observation.total}/${RUBRIC_MAX}`)),
+    el("button",{class:tab==="score"?"on":"",onclick:()=>{S.review._tab="score";renderRailOnly();}},"Оценка",el("span",{class:"cnt",id:"scoreTabCnt"},`${S.review.observation.total}/${RUBRIC_MAX}`)),
     el("button",{class:tab==="fix"?"on":"",onclick:()=>{S.review._tab="fix";renderRailOnly();}},"Правки",el("span",{class:"cnt"},String(S.review.corrections.length))));
   rail.append(bar);
   rail.append(tab==="score"?renderScoreTab():renderFixTab());
@@ -1092,7 +1092,8 @@ function renderRail(){
 }
 
 /* ---- score tab ---- */
-function setSection(sec,val){sec.groups.forEach(g=>g.items.forEach(it=>{S.review.observation.scores[it.id]=val;}));renderRailOnly();}
+function setSection(sec,val){if(READONLY)return;sec.groups.forEach(g=>g.items.forEach(it=>{S.review.observation.scores[it.id]=val;}));
+  const sc=document.querySelector(".rail-scroll"),top=sc?sc.scrollTop:0;renderRailOnly();const sc2=document.querySelector(".rail-scroll");if(sc2)sc2.scrollTop=top;}
 function renderScoreTab(){
   const o=S.review.observation,wrap=el("div",{style:"display:flex;flex-direction:column;min-height:0;flex:1"});
   const scroll=el("div",{class:"rail-scroll"});
@@ -1104,15 +1105,37 @@ function renderScoreTab(){
     const head=el("div",{class:"obssec-h clk",onclick:()=>toggleCol("rub-"+sec.id,secEl)},el("span",{class:"chev"},"▾"),`${sec.id}. ${sec.title}`,qset,sub);
     secEl.append(head);
     sec.groups.forEach(g=>{secEl.append(el("div",{class:"obsgrp"},`${g.id} ${g.title}`));g.items.forEach(it=>{secMax+=3;const cur=o.scores[it.id];secScore+=cur||0;if(cur!=null)rated++;
-      const seg=el("div",{class:"scoreseg"});[0,1,2,3].forEach(v=>seg.append(el("button",{class:"scbtn"+(cur===v?" on"+(v===0?" z":""):""),onclick:()=>{o.scores[it.id]=(o.scores[it.id]===v?null:v);renderRailOnly();}},v)));
-      secEl.append(el("div",{class:"obsrow"+(cur!=null?" done":"")},el("span",{class:"rdot"}),el("div",{class:"t"},it.text),seg));});});
+      const seg=el("div",{class:"scoreseg"});
+      const row=el("div",{class:"obsrow"+(cur!=null?" done":"")},el("span",{class:"rdot"}),el("div",{class:"t"},it.text),seg);
+      [0,1,2,3].forEach(v=>seg.append(el("button",{class:"scbtn"+(cur===v?" on"+(v===0?" z":""):""),onclick:()=>applyScore(it,v,seg,row,sub,sec)},v)));
+      secEl.append(row);});});
     sub.textContent=`${secScore} / ${secMax}`;collapse("rub-"+sec.id,secEl);scroll.append(secEl);
   });
   scroll.append(el("div",{},el("label",{class:"fld",style:"margin-top:6px"},"Рекомендации наблюдателя"),(()=>{const ta=el("textarea",{class:"input",style:"min-height:70px",oninput:e=>{o.recommendations=e.target.value;autosaveDraft();}});ta.value=o.recommendations;return ta;})()));
   wrap.append(scroll);
-  const pct=Math.round(o.total/RUBRIC_MAX*100);
-  wrap.append(el("div",{class:"obstotal"},`Оценено ${rated}/${ALL_RUBRIC_ITEMS.length}`,el("span",{style:"flex:1"}),el("div",{class:"meter",style:"max-width:84px"},el("i",{style:`width:${pct}%`})),`${o.total}/${RUBRIC_MAX}`,el("span",{class:"chip "+(pct>=66?"good":pct>=40?"warn":"bad")},pct+"%")));
+  const foot=el("div",{class:"obstotal",id:"obsfoot"});scoreFooter(foot);wrap.append(foot);
   return wrap;
+}
+// rebuild only the small footer (rated count + meter + total) — no scroll container touched
+function scoreFooter(foot){
+  const o=S.review.observation;computeObsTotal();
+  const rated=ALL_RUBRIC_ITEMS.filter(id=>o.scores[id]!=null).length,pct=Math.round(o.total/RUBRIC_MAX*100);
+  foot.innerHTML="";
+  foot.append(`Оценено ${rated}/${ALL_RUBRIC_ITEMS.length}`,el("span",{style:"flex:1"}),el("div",{class:"meter",style:"max-width:84px"},el("i",{style:`width:${pct}%`})),`${o.total}/${RUBRIC_MAX}`,el("span",{class:"chip "+(pct>=66?"good":pct>=40?"warn":"bad")},pct+"%"));
+}
+// surgical score toggle — mutate just this segment + live totals, NEVER rebuild the rail (was causing scroll-jump to top)
+function applyScore(it,v,seg,row,sub,sec){
+  if(READONLY)return;
+  const o=S.review.observation;
+  o.scores[it.id]=(o.scores[it.id]===v?null:v);
+  const cur=o.scores[it.id];
+  [...seg.children].forEach((b,vi)=>{b.className="scbtn"+(cur===vi?" on"+(vi===0?" z":""):"");});
+  row.classList.toggle("done",cur!=null);
+  let secScore=0,secMax=0;sec.groups.forEach(g=>g.items.forEach(x=>{secMax+=3;secScore+=o.scores[x.id]||0;}));
+  sub.textContent=`${secScore} / ${secMax}`;
+  const foot=$("#obsfoot");if(foot)scoreFooter(foot);
+  computeObsTotal();const cnt=$("#scoreTabCnt");if(cnt)cnt.textContent=`${o.total}/${RUBRIC_MAX}`;
+  updateScoreBadge();autosaveDraft();
 }
 function updateScoreBadge(){computeObsTotal();const b=$("#tbScore");if(b)b.textContent=`${S.review.observation.total} / ${RUBRIC_MAX}`;}
 
