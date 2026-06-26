@@ -966,7 +966,7 @@ function safeDocFrag(html){
 // the original uploaded КСП, rendered as faithfully as possible
 function renderOriginal(){
   const box=el("div",{class:"original"});
-  if(!SOURCE){box.append(el("p",{class:"muted"},"Оригинал доступен только при загрузке файла (.docx или .pdf) в этой сессии."));return box;}
+  if(!SOURCE){box.append(el("p",{class:"muted"},"⏳ Оригинал загружается… (если он сохранён для этой проверки). Пока доступен вид «Разобранный»."));return box;}
   if(SOURCE.kind==="pdf"){
     box.classList.add("mq-on");                 // drag-a-box text selection (easier than native selection over the canvas)
     box.append(el("div",{class:"orig-bar"},
@@ -1627,7 +1627,8 @@ function openSavedReview(r){closeModal();S.review=JSON.parse(JSON.stringify(r));
   if(!o.scores){const sc=Object.fromEntries(ALL_RUBRIC_ITEMS.map(id=>[id,null]));(o.sections||[]).forEach(s=>(s.items||[]).forEach(it=>{sc[it.id]=it.score;}));o.scores=sc;}
   o.max=RUBRIC_MAX;S.review.observation=o;
   S.review._candidates=runLinters(S.review._norm,S.review.generation);S.review._tab="score";S.review._startedAt=Date.now();
-  if(SOURCE){if(READONLY)S.review._view="original";}else if(S.review._view==="original")S.review._view="parsed";   // need the file to show the original
+  // show the plan instantly: original view only if we ALREADY have the file; else parsed now, upgrade on attach-source
+  if(SOURCE){if(READONLY)S.review._view="original";}else if(S.review._view==="original")S.review._view="parsed";
   S.screen="review";render();}
 function syntaxJSON(obj){let j=esc(JSON.stringify(obj,null,2));return j.replace(/(&quot;[^&]*?&quot;)(\s*:)/g,'<span class="k">$1</span>$2').replace(/:\s*(&quot;.*?&quot;)/g,': <span class="s">$1</span>').replace(/:\s*(-?\d+\.?\d*)/g,': <span class="n">$1</span>').replace(/:\s*(true|false)/g,': <span class="b">$1</span>').replace(/:\s*(null)/g,': <span class="nl">$1</span>');}
 function download(name,text){const b=new Blob([text],{type:"application/json"}),u=URL.createObjectURL(b),a=el("a",{href:u,download:name});document.body.append(a);a.click();a.remove();URL.revokeObjectURL(u);}
@@ -1698,6 +1699,17 @@ window.addEventListener("message",function(e){
   if(e.origin!==window.location.origin||e.source!==window.parent)return;   // only the same-origin host app may drive the engine
   var d=e&&e.data;
   if(d&&d.type==="load-review"&&d.review&&d.review._norm){try{openSavedReview(d.review);}catch(err){console.error(err);S.screen="upload";S.review=null;render();toast("Не удалось открыть проверку");}}
+  // the original file arrives separately (fetched in the background) — attach it so the «Оригинал» view works
+  if(d&&d.type==="attach-source"&&d.source_document&&S.review){
+    try{
+      SOURCE=sourceFromDoc(d.source_document);
+      if(SOURCE){
+        if(READONLY){S.review._view="original";render();}      // ML wanted the original-with-highlights — upgrade now
+        else if(S.review._view==="original")render();           // teacher already on original → render it
+        else toast("📄 Оригинал готов — вкладка «Оригинал»");    // teacher on parsed → just enable the toggle
+      }
+    }catch(err){console.warn("attach-source",err);}
+  }
 });
 // surface otherwise-silent failures (no server to log to)
 window.addEventListener("error",function(ev){console.error("[ksp]",ev.error||ev.message);});
