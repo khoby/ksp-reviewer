@@ -966,6 +966,7 @@ function safeDocFrag(html){
 // the original uploaded КСП, rendered as faithfully as possible
 function renderOriginal(){
   const box=el("div",{class:"original"});
+  enableOriginalSelect(box);   // native selection (any original type) → правка on release
   if(!SOURCE){
     var st=S.review&&S.review._srcState;
     var msg=st==="pending"?"⏳ Загружаю оригинал…":
@@ -976,11 +977,9 @@ function renderOriginal(){
     return box;
   }
   if(SOURCE.kind==="pdf"){
-    box.classList.add("mq-on");                 // drag-a-box text selection (easier than native selection over the canvas)
     box.append(el("div",{class:"orig-bar"},
-      el("span",{class:"orig-note"},"📄 Оригинал PDF. Обведите рамкой текст с ошибкой → откроется правка. Клавиша S или 📷 — скриншот области."),
+      el("span",{class:"orig-note"},"📄 Оригинал PDF. Выделите текст с ошибкой мышью → откроется правка. Клавиша S или 📷 — скриншот области."),
       el("button",{class:"btn ghost xs",onclick:startShot},"📷 Скриншот (S)")));
-    enableMarquee(box);
     (async()=>{
       let pdf;
       try{ pdf=await pdfjsLib.getDocument({data:SOURCE.bytes.slice(0)}).promise; }
@@ -1020,50 +1019,25 @@ function renderOriginal(){
   box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));
   setTimeout(highlightOriginal,0);return box;
 }
-/* ---------- marquee box-select: drag a rectangle over the PDF original → grab the text inside → правка ----------
-   Native text selection over pdf.js's transparent text layer (sitting on the canvas) is fiddly and jumpy.
-   Instead the teacher just draws a box around the wrong text; we collect every text span the box touches,
-   join them in reading order, and open the correction form pre-filled. Forgiving — rough boxes are fine. */
-function mqPos(b,x0,y0,x1,y1){b.style.left=Math.min(x0,x1)+"px";b.style.top=Math.min(y0,y1)+"px";b.style.width=Math.abs(x1-x0)+"px";b.style.height=Math.abs(y1-y0)+"px";}
-function spansInRect(rect){
-  const hits=[];
-  document.querySelectorAll(".original .textLayer span").forEach(s=>{
-    if(!s.textContent.trim())return;
-    const r=s.getBoundingClientRect();
-    if(r.left<rect.right&&r.right>rect.left&&r.top<rect.bottom&&r.bottom>rect.top)hits.push({s,r});
-  });
-  hits.sort((a,b)=>Math.abs(a.r.top-b.r.top)>6?a.r.top-b.r.top:a.r.left-b.r.left);   // reading order: row, then left
-  let out="",lastTop=null,lastRight=null;
-  hits.forEach(({s,r})=>{
-    if(lastTop!==null){ if(Math.abs(r.top-lastTop)>6)out+=" "; else if(r.left-lastRight>1.5)out+=" "; }
-    out+=s.textContent; lastTop=r.top; lastRight=r.right;
-  });
-  return {text:out.replace(/\s+/g," ").trim(),els:hits.map(h=>h.s)};
+/* ---------- original-pane selection → правка ----------
+   Just NATIVE browser selection over the rendered original (pdf.js text layer / docx html). It is precise,
+   shows a real highlight, and works with the canvas overlay. On mouse release, if text is selected inside the
+   original, the correction form opens pre-filled. (The earlier caret-from-point "box" was fragile once the
+   pixel canvas rendered over the transparent text — native selection is the robust path.) */
+function selWithinOriginal(){
+  const sel=window.getSelection();
+  if(!sel||sel.isCollapsed)return null;
+  const txt=sel.toString().replace(/\s+/g," ").trim();
+  if(txt.length<2)return null;
+  const a=sel.anchorNode,anc=a?(a.nodeType===1?a:a.parentElement):null;
+  if(!anc||!anc.closest||!anc.closest(".original"))return null;
+  return txt;
 }
-function flashSpans(els){els.forEach(s=>s.classList.add("mq-hit"));setTimeout(()=>els.forEach(s=>s.classList.remove("mq-hit")),700);}
-function enableMarquee(box){
-  let sx=0,sy=0,drawing=false,boxEl=null;
-  box.addEventListener("mousedown",e=>{
-    if(e.button!==0||READONLY)return;
-    if(!(e.target.closest&&e.target.closest(".orig-pagewrap")))return;   // only over a rendered page, not the toolbar
-    drawing=true;sx=e.clientX;sy=e.clientY;e.preventDefault();            // suppress the jumpy native selection
-    boxEl=el("div",{class:"mq-box"});document.body.append(boxEl);mqPos(boxEl,sx,sy,sx,sy);
-    const onMove=ev=>{if(drawing)mqPos(boxEl,sx,sy,ev.clientX,ev.clientY);};
-    const onUp=ev=>{
-      drawing=false;document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);
-      if(boxEl){boxEl.remove();boxEl=null;}
-      if(Math.abs(ev.clientX-sx)<6&&Math.abs(ev.clientY-sy)<6)return;       // a click, not a drag
-      // PRECISE: take the caret range between press & release points, so boxing one word grabs one word
-      let range=rangeFromBox(sx,sy,ev.clientX,ev.clientY),text=range?range.toString().replace(/\s+/g," ").trim():"";
-      if(text.length<2){                                                    // fallback: whole spans the box touches
-        const rect={left:Math.min(sx,ev.clientX),top:Math.min(sy,ev.clientY),right:Math.max(sx,ev.clientX),bottom:Math.max(sy,ev.clientY)};
-        const r2=spansInRect(rect);text=r2.text;range=null;flashSpans(r2.els);
-      }
-      if(text.length<2){toast("В рамке нет текста — обведите слова целиком");return;}
-      if(range){const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);}   // show exactly what was captured
-      pending=fieldForOriginalSelection(text);openFormFromPending();
-    };
-    document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+function enableOriginalSelect(box){
+  box.addEventListener("mouseup",e=>{
+    if(READONLY)return;
+    if(e.target&&e.target.closest&&e.target.closest(".corr-hl"))return;   // existing highlight → its own click handler
+    setTimeout(()=>{ const txt=selWithinOriginal(); if(!txt)return; pending=fieldForOriginalSelection(txt); openFormFromPending(); },0);
   });
 }
 /* ---------- original document embed (so ML — and the teacher on re-open — can render the real КСП) ----------
@@ -1088,27 +1062,6 @@ function sourceFromDoc(sd){
 }
 // attach the original to an outgoing submission (best-effort — never block the send if encoding fails)
 function withSource(_p){try{const sd=sourceDoc();if(sd)_p.source_document=sd;}catch(e){console.warn("withSource",e);}return _p;}
-
-/* ---------- precise caret range from a marquee box (fixes "one word selects several") ---------- */
-function caretAt(x,y){
-  try{
-    if(document.caretRangeFromPoint){return document.caretRangeFromPoint(x,y);}
-    if(document.caretPositionFromPoint){const p=document.caretPositionFromPoint(x,y);if(p){const r=document.createRange();r.setStart(p.offsetNode,p.offset);r.collapse(true);return r;}}
-  }catch(e){}
-  return null;
-}
-function rangeFromBox(x0,y0,x1,y1){
-  const a=caretAt(x0,y0),b=caretAt(x1,y1);
-  if(!a||!b)return null;
-  try{
-    const range=document.createRange();
-    range.setStart(a.startContainer,a.startOffset);range.setEnd(a.startContainer,a.startOffset);
-    const bAfter=range.comparePoint(b.startContainer,b.startOffset)>=0;
-    if(bAfter)range.setEnd(b.startContainer,b.startOffset);
-    else{range.setStart(b.startContainer,b.startOffset);range.setEnd(a.startContainer,a.startOffset);}
-    return range.collapsed?null:range;
-  }catch(e){return null;}
-}
 
 /* ---------- correction highlights on the rendered ORIGINAL ---------- */
 function escRx(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
@@ -1343,7 +1296,7 @@ function renderFixTab(){
   const wrap=el("div",{style:"display:flex;flex-direction:column;min-height:0;flex:1"});
   // persistent prompt — always visible at the top of the Правки tab (wording adapts to the PDF-original box-select)
   const origPdf=S.review._view==="original"&&SOURCE&&SOURCE.kind==="pdf";
-  const hint=origPdf?el("div",{class:"fixhint"},el("span",{},"Обведите рамкой текст с ошибкой → правка"),el("span",{style:"opacity:.4;margin:0 5px"},"·"),el("span",{class:"kbd"},"S"),el("span",{}," скриншот области")):el("div",{class:"fixhint"},
+  const hint=origPdf?el("div",{class:"fixhint"},el("span",{},"Выделите текст с ошибкой → правка"),el("span",{style:"opacity:.4;margin:0 5px"},"·"),el("span",{class:"kbd"},"S"),el("span",{}," скриншот области")):el("div",{class:"fixhint"},
     el("span",{},"Выделите текст → "),el("span",{class:"kbd"},"П"),el("span",{style:"opacity:.5"},"/"),el("span",{class:"kbd"},"G"),el("span",{}," правка"),
     el("span",{style:"opacity:.4;margin:0 5px"},"·"),
     el("span",{class:"kbd"},"S"),el("span",{}," скриншот"));
