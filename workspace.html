@@ -112,6 +112,18 @@ textarea.input{resize:vertical;min-height:54px;line-height:1.45}
 .mq-hit{background:rgba(100,96,255,.34)!important;border-radius:2px;color:transparent}
 .original.mq-on .textLayer span{cursor:crosshair}
 .original.mq-on .orig-pagewrap{cursor:crosshair}
+/* correction highlights on the ORIGINAL doc — teacher sees them appear live, ML sees them on open */
+mark.corr-hl{background:rgba(255,186,8,.42);color:inherit;border-radius:2px;box-shadow:0 0 0 1px rgba(214,140,0,.55);cursor:pointer}
+.original .textLayer span.corr-hl{background:rgba(255,186,8,.5)!important;border-radius:2px;cursor:pointer;color:transparent}
+.original td.corr-hl,.original p.corr-hl,.original li.corr-hl,.original div.corr-hl,.original span.corr-hl{background:rgba(255,186,8,.3);cursor:pointer;border-radius:2px}
+mark.corr-hl.sev-critical,.original .corr-hl.sev-critical{background:rgba(240,68,56,.34)!important;box-shadow:0 0 0 1px rgba(200,40,30,.5)}
+mark.corr-hl.sev-minor,.original .corr-hl.sev-minor{background:rgba(100,96,255,.28)!important;box-shadow:0 0 0 1px rgba(100,96,255,.45)}
+.corr-pop{position:fixed;z-index:10001;max-width:340px;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh-pop);padding:12px 14px;font-size:13px}
+.corr-pop .cat{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.corr-pop .wd{background:var(--page);border-radius:7px;padding:6px 8px;margin:4px 0;white-space:pre-wrap;line-height:1.4}
+.corr-pop .was{text-decoration:line-through;color:#b3401f}.corr-pop .now{color:#0f6b48}
+.corr-pop .rat{margin-top:6px;color:var(--ink-soft)}
+.orig-hlnote{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#9a6a00;background:#fff7e6;border:1px solid #ffe2a8;border-radius:999px;padding:3px 10px;margin-left:auto}
 .orig-docx{font-size:14px;line-height:1.5}
 .orig-docx table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
 .orig-docx td,.orig-docx th{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}
@@ -768,7 +780,7 @@ async function parsePdfFile(file){
   toast("Распознаю PDF…");
   let buf;
   try{ buf=await file.arrayBuffer(); }catch(e){console.error(e);toast("Не удалось прочитать файл");return;}
-  SOURCE={kind:"pdf",bytes:new Uint8Array(buf.slice(0))};   // keep a copy for the "Оригинал" view (pdf.js may detach buf)
+  SOURCE={kind:"pdf",bytes:new Uint8Array(buf.slice(0)),name:file.name};   // keep a copy for the "Оригинал" view (pdf.js may detach buf)
   // 1) try the local python server (pdfplumber — best quality) if it's reachable
   try{
     const r=await fetch("/parse-pdf",{method:"POST",body:buf.slice(0),headers:{"Content-Type":"application/pdf"}});
@@ -867,7 +879,7 @@ function parseDocxFile(file){
   if(window.__noMammoth||!window.mammoth){toast("mammoth не загружен — вставьте текст/JSON");return;}
   const r=new FileReader();
   r.onload=()=>window.mammoth.convertToHtml({arrayBuffer:r.result}).then(out=>{
-    SOURCE={kind:"docx",html:out.value};   // formatted HTML for the "Оригинал" view
+    SOURCE={kind:"docx",html:out.value,name:file.name};   // formatted HTML for the "Оригинал" view
     const doc=new DOMParser().parseFromString(out.value,"text/html");
     const res=kspParseDoc(doc);
     if(!res.norm.stages.length){res.warnings.push("no_stages_found");}
@@ -986,15 +998,19 @@ function renderOriginal(){
           await pdfjsLib.renderTextLayer({textContentSource:tc,textContent:tc,container:tl,viewport:vp}).promise;   // selectable text first (fast)
           drawCanvas(wrap,page,vp);   // then pixel render behind it (async, non-blocking)
         }catch(e){ console.warn("orig page",i,e); wrap.append(el("div",{class:"muted",style:"padding:16px"},"Стр. "+i)); }
+        highlightOriginal();   // mark corrections as each page's text layer lands (progressive)
       }
+      highlightOriginal();
     })();
     return box;
   }
   if(SOURCE.kind==="docx"){
     box.append(el("div",{class:"orig-note"},"📄 Оригинал .docx — форматирование и таблицы."));
-    const d=el("div",{class:"orig-docx"});d.appendChild(safeDocFrag(SOURCE.html));box.append(d);return box;
+    const d=el("div",{class:"orig-docx"});d.appendChild(safeDocFrag(SOURCE.html));box.append(d);
+    setTimeout(highlightOriginal,0);return box;   // defer until the box is attached to the DOM
   }
-  box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));return box;
+  box.append(el("div",{class:"orig-note"},"📝 Вставленный текст — как есть."),el("pre",{class:"orig-text"},SOURCE.text||""));
+  setTimeout(highlightOriginal,0);return box;
 }
 /* ---------- marquee box-select: drag a rectangle over the PDF original → grab the text inside → правка ----------
    Native text selection over pdf.js's transparent text layer (sitting on the canvas) is fiddly and jumpy.
@@ -1028,16 +1044,142 @@ function enableMarquee(box){
     const onUp=ev=>{
       drawing=false;document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);
       if(boxEl){boxEl.remove();boxEl=null;}
-      const rect={left:Math.min(sx,ev.clientX),top:Math.min(sy,ev.clientY),right:Math.max(sx,ev.clientX),bottom:Math.max(sy,ev.clientY)};
-      if(rect.right-rect.left<6&&rect.bottom-rect.top<6)return;            // a click, not a drag
-      const {text,els}=spansInRect(rect);
+      if(Math.abs(ev.clientX-sx)<6&&Math.abs(ev.clientY-sy)<6)return;       // a click, not a drag
+      // PRECISE: take the caret range between press & release points, so boxing one word grabs one word
+      let range=rangeFromBox(sx,sy,ev.clientX,ev.clientY),text=range?range.toString().replace(/\s+/g," ").trim():"";
+      if(text.length<2){                                                    // fallback: whole spans the box touches
+        const rect={left:Math.min(sx,ev.clientX),top:Math.min(sy,ev.clientY),right:Math.max(sx,ev.clientX),bottom:Math.max(sy,ev.clientY)};
+        const r2=spansInRect(rect);text=r2.text;range=null;flashSpans(r2.els);
+      }
       if(text.length<2){toast("В рамке нет текста — обведите слова целиком");return;}
-      flashSpans(els);
+      if(range){const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);}   // show exactly what was captured
       pending=fieldForOriginalSelection(text);openFormFromPending();
     };
     document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
   });
 }
+/* ---------- original document embed (so ML — and the teacher on re-open — can render the real КСП) ----------
+   The parsed view is lossy, so we ship the original file with the submission and re-render it with highlights. */
+function bytesToB64(u8){let s="";const C=0x8000;for(let i=0;i<u8.length;i+=C)s+=String.fromCharCode.apply(null,u8.subarray(i,i+C));return btoa(s);}
+function b64ToBytes(b64){const bin=atob(b64),u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
+function sourceDoc(){
+  if(!SOURCE)return null;
+  if(SOURCE.kind==="pdf"&&SOURCE.bytes)return{kind:"pdf",name:SOURCE.name||"",b64:bytesToB64(SOURCE.bytes)};
+  if(SOURCE.kind==="docx")return{kind:"docx",name:SOURCE.name||"",html:SOURCE.html||""};
+  if(SOURCE.kind==="text")return{kind:"text",text:SOURCE.text||""};
+  return null;
+}
+function sourceFromDoc(sd){
+  if(!sd||!sd.kind)return null;
+  try{
+    if(sd.kind==="pdf"&&sd.b64)return{kind:"pdf",bytes:b64ToBytes(sd.b64),name:sd.name||""};
+    if(sd.kind==="docx")return{kind:"docx",html:sd.html||"",name:sd.name||""};
+    if(sd.kind==="text")return{kind:"text",text:sd.text||""};
+  }catch(e){console.warn("sourceFromDoc",e);}
+  return null;
+}
+// attach the original to an outgoing submission (best-effort — never block the send if encoding fails)
+function withSource(_p){try{const sd=sourceDoc();if(sd)_p.source_document=sd;}catch(e){console.warn("withSource",e);}return _p;}
+
+/* ---------- precise caret range from a marquee box (fixes "one word selects several") ---------- */
+function caretAt(x,y){
+  try{
+    if(document.caretRangeFromPoint){return document.caretRangeFromPoint(x,y);}
+    if(document.caretPositionFromPoint){const p=document.caretPositionFromPoint(x,y);if(p){const r=document.createRange();r.setStart(p.offsetNode,p.offset);r.collapse(true);return r;}}
+  }catch(e){}
+  return null;
+}
+function rangeFromBox(x0,y0,x1,y1){
+  const a=caretAt(x0,y0),b=caretAt(x1,y1);
+  if(!a||!b)return null;
+  try{
+    const range=document.createRange();
+    range.setStart(a.startContainer,a.startOffset);range.setEnd(a.startContainer,a.startOffset);
+    const bAfter=range.comparePoint(b.startContainer,b.startOffset)>=0;
+    if(bAfter)range.setEnd(b.startContainer,b.startOffset);
+    else{range.setStart(b.startContainer,b.startOffset);range.setEnd(a.startContainer,a.startOffset);}
+    return range.collapsed?null:range;
+  }catch(e){return null;}
+}
+
+/* ---------- correction highlights on the rendered ORIGINAL ---------- */
+function escRx(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
+function sevCls(c){return c.severity==="critical"?"sev-critical":c.severity==="minor"?"sev-minor":"";}
+function clearOrigHl(root){
+  root.querySelectorAll("mark.corr-hl").forEach(m=>{const t=document.createTextNode(m.textContent);m.replaceWith(t);});
+  root.querySelectorAll(".corr-hl").forEach(s=>{s.classList.remove("corr-hl","sev-critical","sev-minor");s.removeAttribute("data-cid");});
+  try{root.normalize();}catch(e){}
+}
+function wrapTextSlice(node,start,end,c){
+  const range=document.createRange();range.setStart(node,start);range.setEnd(node,end);
+  const mark=document.createElement("mark");mark.className="corr-hl "+sevCls(c);mark.setAttribute("data-cid",c.id);
+  try{range.surroundContents(mark);return true;}catch(e){return false;}
+}
+// highlight one correction's original_value inside flowing HTML (docx / pasted text)
+function hlInHtml(root,c){
+  const needle=(c.original_value||"").replace(/\s+/g," ").trim();if(needle.length<2)return false;
+  let n,w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null);
+  while(n=w.nextNode()){const i=n.nodeValue.indexOf(c.original_value);if(i>=0&&wrapTextSlice(n,i,i+c.original_value.length,c))return true;}
+  const rx=new RegExp(needle.split(/\s+/).map(escRx).join("\\s+"));
+  w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null);
+  while(n=w.nextNode()){const m=rx.exec(n.nodeValue);if(m&&wrapTextSlice(n,m.index,m.index+m[0].length,c))return true;}
+  for(const b of root.querySelectorAll("td,th,li,p,div")){
+    if(!b.querySelector("*")&&(b.textContent||"").replace(/\s+/g," ").includes(needle)){b.classList.add("corr-hl",sevCls(c));b.setAttribute("data-cid",c.id);return true;}
+  }
+  return false;
+}
+// highlight one correction across the PDF text-layer spans (mark the covering spans)
+function hlInSpans(root,c){
+  const needle=(c.original_value||"").replace(/\s+/g," ").trim();if(needle.length<2)return false;
+  for(const pw of root.querySelectorAll(".orig-pagewrap")){
+    const spans=[...pw.querySelectorAll(".textLayer span")].filter(s=>s.textContent.trim());
+    let concat="";const owner=[];
+    spans.forEach((s,si)=>{const t=s.textContent.replace(/\s+/g," ").trim();if(!t)return;if(concat){concat+=" ";owner.push(-1);}for(let k=0;k<t.length;k++)owner.push(si);concat+=t;});
+    const idx=concat.indexOf(needle);
+    if(idx>=0){const hit=new Set();for(let k=idx;k<idx+needle.length;k++){if(owner[k]>=0)hit.add(owner[k]);}hit.forEach(si=>{spans[si].classList.add("corr-hl",sevCls(c));spans[si].setAttribute("data-cid",c.id);});return true;}
+  }
+  return false;
+}
+let _hlNote=null;
+function highlightOriginal(){
+  const root=document.querySelector(".docscroll .original");if(!root)return;
+  clearOrigHl(root);
+  const corrs=(S.review.corrections||[]).filter(c=>c.original_value&&c.original_value.trim()&&c.edit_action!=="flag_only"&&!c.evidence_image);
+  let marked=0;
+  const pdf=SOURCE&&SOURCE.kind==="pdf";
+  corrs.forEach(c=>{if(pdf?hlInSpans(root,c):hlInHtml(root,c))marked++;});
+  // a small live counter chip (in the PDF orig-bar, or just under the docx note)
+  if(_hlNote&&_hlNote.parentNode)_hlNote.remove();_hlNote=null;
+  if(corrs.length){
+    _hlNote=el("span",{class:"orig-hlnote"},`✏ Правок отмечено: ${marked}/${corrs.length}`);
+    const bar=root.querySelector(".orig-bar");
+    if(bar)bar.append(_hlNote);
+    else root.insertBefore(el("div",{style:"margin:0 0 8px"},_hlNote),root.firstChild);
+  }
+}
+// click a highlight → teacher edits it; ML sees a read-only popover (было → стало)
+function corrPopover(c,x,y){
+  closeCorrPop();
+  const cat=(CAT_BY_ID[c.category]||{label:c.category}).label;
+  const pop=el("div",{class:"corr-pop"},
+    el("div",{class:"cat"},el("span",{class:"chip "+sevChip(c.severity)},c.severity),el("span",{},cat)),
+    c.edit_action==="flag_only"?el("div",{class:"wd"},"⚑ "+(c.rationale||"флаг")):el("div",{},el("div",{class:"wd was"},c.original_value||""),el("div",{class:"wd now"},c.corrected_value??"")),
+    c.rationale&&c.edit_action!=="flag_only"?el("div",{class:"rat"},"💬 "+c.rationale):null);
+  document.body.append(pop);
+  const w=pop.getBoundingClientRect();
+  pop.style.left=Math.max(8,Math.min(x,window.innerWidth-w.width-8))+"px";
+  pop.style.top=(y+18+w.height>window.innerHeight?y-w.height-10:y+18)+"px";
+  _corrPop=pop;setTimeout(()=>document.addEventListener("mousedown",closeCorrPop,{once:true}),0);
+}
+let _corrPop=null;
+function closeCorrPop(){if(_corrPop){_corrPop.remove();_corrPop=null;}}
+document.addEventListener("click",e=>{
+  const h=e.target.closest&&e.target.closest(".corr-hl");if(!h)return;
+  const cid=h.getAttribute("data-cid");const c=(S.review&&S.review.corrections||[]).find(x=>x.id===cid);if(!c)return;
+  e.preventDefault();e.stopPropagation();
+  if(READONLY)corrPopover(c,e.clientX,e.clientY);
+  else{S.review._tab="fix";renderRailOnly();editCorrection(cid);}
+});
 /* ---------- screenshot tool: drag a region over the rendered original → cosmetic correction ---------- */
 let shotMode=false;
 function startShot(){
@@ -1360,7 +1502,7 @@ function renderRailOnly(){const r=$(".right");if(r){r.innerHTML="";r.append(rend
 // completely untouched (no marks there) — so the PDF doesn't reflow/jump or re-render its canvases.
 function refreshEdit(){
   renderRailOnly();
-  if(S.review._view==="original")return;
+  if(S.review._view==="original"){highlightOriginal();return;}   // live-mark corrections on the original (no reflow)
   // surgically refresh only the leaves whose highlight changed — no doc reflow, no scroll jump
   document.querySelectorAll(".docscroll .leaf").forEach(old=>{
     const path=old.getAttribute("data-path"),hasCorr=S.review.corrections.some(c=>c.anchor.json_path===path),hasMark=!!old.querySelector("mark,.hl");
@@ -1445,7 +1587,7 @@ function openTeacherSubmit(review,inv,allOk){
     el("div",{class:"mf"},el("button",{class:"btn secondary",onclick:closeModal},"← Продолжить правки"),el("span",{style:"flex:1"}),
       el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
         if(!allOk){toast("Сначала поправьте: "+((inv.find(([ok])=>!ok)||[,""])[1]));return;}
-        const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");
+        const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;withSource(_p);window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");
       }},"📤 Отправить ML-команде")));
   showModal(modal);
 }
@@ -1467,7 +1609,7 @@ function openExportModal(){
     body,
     el("div",{class:"mf"},el("button",{class:"btn",onclick:()=>{navigator.clipboard?.writeText(buildReviewText(review));toast("Текст скопирован");}},"⧉ Копировать текст"),el("button",{class:"btn secondary",onclick:()=>download(fname+".txt",buildReviewText(review))},"⭳ .txt"),el("button",{class:"btn secondary",onclick:()=>download(fname+".json",json)},"⭳ JSON"),el("span",{style:"flex:1"}),el("button",{class:"btn secondary",onclick:finishReview},"💾 Сохранить"),el("button",{class:"btn",style:allOk?"":"opacity:.55",onclick:()=>{
       if(!allOk){toast("Сначала исправьте контракт: "+((inv.find(([ok])=>!ok)||[,""])[1]));return;}
-      if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");}
+      if(EMBED){const _p=JSON.parse(JSON.stringify(review));_p._norm=S.review._norm;_p._html=S.review._html;withSource(_p);window.parent.postMessage({type:"ksp-review",review:_p},window.location.origin);toast("Отправлено ✓");}
       else toast("Локально сохранено (в проде → POST /v1/ksp-reviews)");
     }},"📤 Отправить ML")));
   showModal(modal);paint();
@@ -1480,11 +1622,13 @@ function renderExportDiff(review){
 }
 function finishReview(){const review=buildReview();review._norm=S.review._norm;/* keep plan for re-open */const idx=S.reviews.findIndex(r=>r.review_id===review.review_id);if(idx>=0)S.reviews[idx]=review;else S.reviews.unshift(review);saveReviews();clearDraft();$("#revCount").textContent=S.reviews.length;toast("Сохранено в историю");}
 const stripInternal=r=>{const o={};for(const k in r)if(!k.startsWith("_"))o[k]=r[k];return o;};
-function openSavedReview(r){closeModal();SOURCE=null;S.review=JSON.parse(JSON.stringify(r));if(!S.review._norm){toast("Нет данных плана для просмотра");return;}
+function openSavedReview(r){closeModal();S.review=JSON.parse(JSON.stringify(r));SOURCE=sourceFromDoc(S.review.source_document);if(!S.review._norm){toast("Нет данных плана для просмотра");return;}
   const o=S.review.observation||{};
   if(!o.scores){const sc=Object.fromEntries(ALL_RUBRIC_ITEMS.map(id=>[id,null]));(o.sections||[]).forEach(s=>(s.items||[]).forEach(it=>{sc[it.id]=it.score;}));o.scores=sc;}
   o.max=RUBRIC_MAX;S.review.observation=o;
-  S.review._candidates=runLinters(S.review._norm,S.review.generation);S.review._tab="score";S.review._startedAt=Date.now();S.screen="review";render();}
+  S.review._candidates=runLinters(S.review._norm,S.review.generation);S.review._tab="score";S.review._startedAt=Date.now();
+  if(SOURCE){if(READONLY)S.review._view="original";}else if(S.review._view==="original")S.review._view="parsed";   // need the file to show the original
+  S.screen="review";render();}
 function syntaxJSON(obj){let j=esc(JSON.stringify(obj,null,2));return j.replace(/(&quot;[^&]*?&quot;)(\s*:)/g,'<span class="k">$1</span>$2').replace(/:\s*(&quot;.*?&quot;)/g,': <span class="s">$1</span>').replace(/:\s*(-?\d+\.?\d*)/g,': <span class="n">$1</span>').replace(/:\s*(true|false)/g,': <span class="b">$1</span>').replace(/:\s*(null)/g,': <span class="nl">$1</span>');}
 function download(name,text){const b=new Blob([text],{type:"application/json"}),u=URL.createObjectURL(b),a=el("a",{href:u,download:name});document.body.append(a);a.click();a.remove();URL.revokeObjectURL(u);}
 function openReviewsModal(){
