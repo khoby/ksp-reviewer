@@ -941,8 +941,8 @@ function buildDocNav(){
   // view toggle: parsed (structured) vs original (as uploaded)
   nav.append(el("div",{class:"viewtoggle"},
     el("button",{class:"vt"+(orig?"":" on"),onclick:()=>{S.review._view="parsed";render();}},"📋 Разобранный"),
-    el("button",{class:"vt"+(orig?" on":""),title:SOURCE?"Показать оригинал — как загружено":"Оригинал доступен только при загрузке файла в этой сессии",
-      onclick:()=>{if(SOURCE){S.review._view="original";render();}else toast("Оригинал доступен только при загрузке файла");}},"📄 Оригинал")));
+    el("button",{class:"vt"+(orig?" on":""),title:"Показать оригинал — как загружено",
+      onclick:()=>{S.review._view="original";render();}},"📄 Оригинал")));   // always switch; the pane explains if the file isn't available
   if(!orig){
     nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#sec-meta")},"Метаданные"));
     n.stages.forEach((s,i)=>nav.append(el("button",{class:"jump",onclick:()=>jumpTo("#stg-"+i)},shortStage(s.stage_name,i))));
@@ -966,7 +966,15 @@ function safeDocFrag(html){
 // the original uploaded КСП, rendered as faithfully as possible
 function renderOriginal(){
   const box=el("div",{class:"original"});
-  if(!SOURCE){box.append(el("p",{class:"muted"},"⏳ Оригинал загружается… (если он сохранён для этой проверки). Пока доступен вид «Разобранный»."));return box;}
+  if(!SOURCE){
+    var st=S.review&&S.review._srcState;
+    var msg=st==="pending"?"⏳ Загружаю оригинал…":
+            st==="none"?"📄 Оригинал не сохранён для этой проверки. Он прикрепляется только к проверкам, сделанным в обновлённой версии — для них здесь будет видна исходная КСП с подсветкой правок. Пока используйте вид «Разобранный».":
+            "Оригинал доступен при загрузке файла (.docx или .pdf).";
+    box.append(el("p",{class:"muted",style:"line-height:1.5"},msg));
+    if(st==="none"||st==="pending")box.append(el("button",{class:"btn secondary sm",style:"margin-top:10px",onclick:()=>{S.review._view="parsed";render();}},"← Открыть «Разобранный»"));
+    return box;
+  }
   if(SOURCE.kind==="pdf"){
     box.classList.add("mq-on");                 // drag-a-box text selection (easier than native selection over the canvas)
     box.append(el("div",{class:"orig-bar"},
@@ -1699,16 +1707,21 @@ window.addEventListener("message",function(e){
   if(e.origin!==window.location.origin||e.source!==window.parent)return;   // only the same-origin host app may drive the engine
   var d=e&&e.data;
   if(d&&d.type==="load-review"&&d.review&&d.review._norm){try{openSavedReview(d.review);}catch(err){console.error(err);S.screen="upload";S.review=null;render();toast("Не удалось открыть проверку");}}
-  // the original file arrives separately (fetched in the background) — attach it so the «Оригинал» view works
+  // the host tells us the original is being fetched in the background (older reviews / light list)
+  if(d&&d.type==="source-pending"&&S.review){S.review._srcState="pending";if(S.review._view==="original")render();}
+  // …and that there is no original for this review (never embedded) — show an honest message, not a dead toast
+  if(d&&d.type==="source-none"&&S.review){S.review._srcState="none";if(S.review._view==="original")render();}
+  // the original file arrives separately — attach it so the «Оригинал» view works
   if(d&&d.type==="attach-source"&&d.source_document&&S.review){
     try{
       SOURCE=sourceFromDoc(d.source_document);
       if(SOURCE){
+        S.review._srcState="ready";
         if(READONLY){S.review._view="original";render();}      // ML wanted the original-with-highlights — upgrade now
         else if(S.review._view==="original")render();           // teacher already on original → render it
         else toast("📄 Оригинал готов — вкладка «Оригинал»");    // teacher on parsed → just enable the toggle
-      }
-    }catch(err){console.warn("attach-source",err);}
+      }else{S.review._srcState="none";if(S.review._view==="original")render();}
+    }catch(err){console.warn("attach-source",err);S.review._srcState="none";}
   }
 });
 // surface otherwise-silent failures (no server to log to)
